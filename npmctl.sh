@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.0"
+readonly MANAGER_VERSION="1.1.1"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -399,12 +399,13 @@ status_line() {
   local mode state
   mode="$(current_network_mode)"
   state="$(docker inspect --format '{{.State.Status}}' nginx-proxy-manager 2>/dev/null || printf '未部署')"
-  printf 'Docker：%s | NPM：%s | 容器：%s\n' \
+  printf 'Docker：%s | NPM：%s\n' \
     "$(docker_runtime_status)" \
-    "$(npm_deployment_status)" \
-    "$(colorize_container_state "$state")"
-  printf '网络：%s | NPMCtl：%s\n' \
-    "${BLUE}$(localize_network_mode "$mode")${RESET}" \
+    "$(npm_deployment_status)"
+  printf '容器：%s | 网络：%s\n' \
+    "$(colorize_container_state "$state")" \
+    "${BLUE}$(localize_network_mode "$mode")${RESET}"
+  printf 'NPMCtl：%s\n' \
     "$MANAGER_VERSION"
 }
 
