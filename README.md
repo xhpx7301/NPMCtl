@@ -25,10 +25,8 @@
 
 ## 安装
 
-发布到 GitHub 后，将下列占位符替换为实际的 raw 安装脚本地址：
-
 ```bash
-curl -fsSL <INSTALL_SCRIPT_URL> | bash
+curl -fsSL https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/install.sh | bash
 ```
 
 也可以从已获取的源码目录执行：
