@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.3"
+readonly MANAGER_VERSION="1.1.4"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -137,6 +137,14 @@ localize_network_mode() {
   case "$1" in
     bridge) printf '桥接网络（bridge）' ;;
     host) printf '宿主机网络（host）' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
+}
+
+short_network_mode() {
+  case "$1" in
+    bridge) printf '桥接（bridge）' ;;
+    host) printf '宿主机（host）' ;;
     *) printf '%s' "${1:-未知}" ;;
   esac
 }
@@ -404,7 +412,7 @@ status_line() {
     "$(npm_deployment_status)"
   printf '容器：%s | 网络：%s\n' \
     "$(colorize_container_state "$state")" \
-    "${BLUE}$(localize_network_mode "$mode")${RESET}"
+    "${BLUE}$(short_network_mode "$mode")${RESET}"
   printf 'NPMCtl：%s\n' \
     "$MANAGER_VERSION"
 }
