@@ -1,2 +1,6 @@
-# Auto detect text files and perform LF normalization
+# Keep shell scripts portable when cloned on Windows and deployed on Linux.
 * text=auto
+*.sh text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

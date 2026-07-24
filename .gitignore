@@ -1,0 +1,8 @@
+# Runtime files if the repository is ever used as a deployment directory.
+data/
+letsencrypt/
+.env
+
+# Local editor and archive files.
+*.swp
+*.tar.gz
