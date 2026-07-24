@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.4"
+readonly MANAGER_VERSION="1.1.5"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -143,8 +143,8 @@ localize_network_mode() {
 
 short_network_mode() {
   case "$1" in
-    bridge) printf '桥接（bridge）' ;;
-    host) printf '宿主机（host）' ;;
+    bridge) printf '桥接' ;;
+    host) printf '宿主机' ;;
     *) printf '%s' "${1:-未知}" ;;
   esac
 }
@@ -406,14 +406,14 @@ uninstall_menu() {
 status_line() {
   local mode state
   mode="$(current_network_mode)"
-  state="$(docker inspect --format '{{.State.Status}}' nginx-proxy-manager 2>/dev/null || printf '未部署')"
-  printf 'Docker：%s | NPM：%s\n' \
+  state="$(docker inspect --format '{{.State.Status}}' nginx-proxy-manager 2>/dev/null || true)"
+  printf '安装：%s | 容器：%s\n' \
+    "$(npm_deployment_status)" \
+    "$(colorize_container_state "$state")"
+  printf 'Docker：%s | 网络：%s\n' \
     "$(docker_runtime_status)" \
-    "$(npm_deployment_status)"
-  printf '容器：%s | 网络：%s\n' \
-    "$(colorize_container_state "$state")" \
     "${BLUE}$(short_network_mode "$mode")${RESET}"
-  printf 'NPMCtl：%s\n' \
+  printf 'NPMCtl 版本：%s\n' \
     "$MANAGER_VERSION"
 }
 
@@ -442,7 +442,7 @@ colorize_container_state() {
   local state="$1" color
   case "$state" in
     running) color="$GREEN" ;;
-    created|restarting|paused|未部署) color="$YELLOW" ;;
+    created|restarting|paused|'') color="$YELLOW" ;;
     exited|dead) color="$RED" ;;
     *) color="$YELLOW" ;;
   esac
