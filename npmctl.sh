@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.0.0"
+readonly MANAGER_VERSION="1.1.0"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -108,6 +108,8 @@ update_manager() {
   install -m 0755 "$temp_file" "$MANAGER_SCRIPT"
   rm -f "$temp_file"
   success "NPMCtl 已更新：${MANAGER_VERSION} -> ${new_version:-未知版本}。"
+  info '正在重新加载新的管理菜单...'
+  exec "$MANAGER_SCRIPT"
 }
 
 install_docker() {
