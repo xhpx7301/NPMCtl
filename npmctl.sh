@@ -30,7 +30,7 @@ success() { printf '%s[完成]%s %s\n' "$GREEN" "$RESET" "$*"; }
 warn() { printf '%s[注意]%s %s\n' "$YELLOW" "$RESET" "$*"; }
 error() { printf '%s[错误]%s %s\n' "$RED" "$RESET" "$*" >&2; }
 
-pause_menu() { printf '\n'; read -r -p '按 Enter 键返回主菜单...' _ || true; }
+pause_menu() { printf '\n'; read -r -p '按回车键返回主菜单...' _ || true; }
 confirm_action() { local answer; read -r -p "$1 [y/n，回车默认n]：" answer || return 1; [[ "$answer" =~ ^[Yy]$ ]]; }
 timestamp() { date '+%Y%m%d-%H%M%S'; }
 manager_source() { readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s\n' "${BASH_SOURCE[0]}"; }
@@ -131,11 +131,32 @@ install_docker() {
 config_value() { [[ -f "$CONFIG_FILE" ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -n 1 || true; }
 current_network_mode() { local mode; mode="$(config_value NETWORK_MODE)"; [[ "$mode" == host ]] && printf 'host\n' || printf 'bridge\n'; }
 
+localize_network_mode() {
+  case "$1" in
+    bridge) printf '桥接网络（bridge）' ;;
+    host) printf '宿主机网络（host）' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
+}
+
+localize_container_state() {
+  case "$1" in
+    created) printf '已创建' ;;
+    restarting) printf '正在重启' ;;
+    running) printf '运行中' ;;
+    paused) printf '已暂停' ;;
+    exited) printf '已停止' ;;
+    dead) printf '异常终止' ;;
+    '') printf '未创建' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 write_config() {
   local mode="$1"
   install -d -m 0750 "$INSTALL_DIR" "$DATA_DIR" "$CERT_DIR"
   cat >"$CONFIG_FILE" <<EOF
-# Managed by NPMCtl. Change networking through: npmctl --network bridge|host
+# 由 NPMCtl 管理。请通过 npmctl --network bridge|host 切换网络模式。
 NETWORK_MODE=${mode}
 EOF
   chmod 0640 "$CONFIG_FILE"
@@ -146,7 +167,7 @@ write_compose_file() {
   install -d -m 0750 "$INSTALL_DIR" "$DATA_DIR" "$CERT_DIR"
   if [[ "$mode" == host ]]; then
     cat >"$COMPOSE_FILE" <<EOF
-# Managed by NPMCtl. Linux host network mode: NPM can reach host 127.0.0.1 services.
+# 由 NPMCtl 管理。Linux 宿主机网络模式：NPM 可访问宿主机的 127.0.0.1 服务。
 services:
   npm:
     image: ${NPM_IMAGE}
@@ -162,7 +183,7 @@ services:
 EOF
   else
     cat >"$COMPOSE_FILE" <<EOF
-# Managed by NPMCtl. Official default: Docker bridge network with published ports.
+# 由 NPMCtl 管理。官方默认：Docker 桥接网络，并发布所需端口。
 services:
   npm:
     image: ${NPM_IMAGE}
@@ -204,14 +225,14 @@ port_conflicts() {
 deploy_npm() {
   local mode="$1" previous_mode='' first_deploy=0
   require_docker || return 1
-  [[ "$mode" == bridge || "$mode" == host ]] || { error '网络模式必须为 bridge 或 host。'; return 1; }
-  [[ "$mode" != host || "$(uname -s)" == Linux ]] || { error 'network_mode: host 仅支持 Linux Docker。'; return 1; }
+  [[ "$mode" == bridge || "$mode" == host ]] || { error '网络模式必须为桥接网络（bridge）或宿主机网络（host）。'; return 1; }
+  [[ "$mode" != host || "$(uname -s)" == Linux ]] || { error '宿主机网络（host）仅支持 Linux Docker。'; return 1; }
   previous_mode="$(current_network_mode)"
   if [[ "$mode" == host ]]; then
-    warn 'host 模式会让 NPM 使用宿主机网络；上游可填写 127.0.0.1:端口。'
-    warn 'Compose 不会使用 ports 映射；80、81、443 必须由 NPM 独占。'
+    warn '宿主机网络（host）会让 NPM 使用宿主机网络；上游可填写 127.0.0.1:端口。'
+    warn 'Docker Compose 不会使用 ports 映射；80、81、443 必须由 NPM 独占。'
   else
-    info 'bridge 模式采用官方默认端口映射：80:80、81:81、443:443。'
+    info '桥接网络（bridge）采用官方默认端口映射：80:80、81:81、443:443。'
   fi
   port_conflicts
   if [[ -f "$COMPOSE_FILE" ]]; then
@@ -224,7 +245,7 @@ deploy_npm() {
   fi
   write_compose_file "$mode"
   if (cd "$INSTALL_DIR" && docker compose config >/dev/null && docker compose up -d); then
-    success "Nginx Proxy Manager 已以 ${mode} 网络模式启动。"
+    success "Nginx Proxy Manager 已以 $(localize_network_mode "$mode") 启动。"
     if [[ "$mode" == host ]]; then
       info '管理地址：http://服务器IP:81；为原生后端填写 127.0.0.1:端口。'
     else
@@ -248,9 +269,9 @@ show_initial_account_guidance() {
 switch_network_mode() {
   local current selected
   current="$(current_network_mode)"
-  printf '\n当前网络模式：%s\n' "$current"
-  printf '  1. bridge（官方默认，端口映射，网络隔离）\n'
-  printf '  2. host（仅 Linux；可访问宿主机 127.0.0.1）\n'
+  printf '\n当前网络模式：%s\n' "$(localize_network_mode "$current")"
+  printf '  1. 桥接网络（bridge，官方默认，端口映射，网络隔离）\n'
+  printf '  2. 宿主机网络（host，仅 Linux；可访问宿主机 127.0.0.1）\n'
   printf '  0. 返回\n'
   read -r -p '请选择 [0-2]：' selected
   case "$selected" in
@@ -265,12 +286,19 @@ show_status() {
   local mode container_state image
   mode="$(current_network_mode)"
   printf '\n%sNginx Proxy Manager 状态%s\n' "$BOLD" "$RESET"
-  printf '部署目录：%s\n网络模式：%s\n' "$INSTALL_DIR" "$mode"
+  printf '部署目录：%s\n网络模式：%s\n' "$INSTALL_DIR" "$(localize_network_mode "$mode")"
   if ! command -v docker >/dev/null 2>&1; then warn 'Docker 未安装。'; return 0; fi
   container_state="$(docker inspect --format '{{.State.Status}}' nginx-proxy-manager 2>/dev/null || true)"
   image="$(docker inspect --format '{{.Config.Image}}' nginx-proxy-manager 2>/dev/null || true)"
-  printf '容器状态：%s\n镜像：%s\n' "${container_state:-未创建}" "${image:-$NPM_IMAGE}"
-  [[ -f "$COMPOSE_FILE" ]] && { printf '\nCompose 配置：\n'; sed -n '1,120p' "$COMPOSE_FILE"; }
+  printf '容器状态：%s\n镜像：%s\n' "$(localize_container_state "$container_state")" "${image:-$NPM_IMAGE}"
+  [[ -f "$COMPOSE_FILE" ]] && { printf '\nDocker Compose 配置（以下字段为 Docker 标准语法）：\n'; show_compose_config; }
+}
+
+show_compose_config() {
+  sed \
+    -e 's|^# Managed by NPMCtl\. Linux host network mode: NPM can reach host 127\.0\.0\.1 services\.$|# 由 NPMCtl 管理。Linux 宿主机网络模式：NPM 可访问宿主机的 127.0.0.1 服务。|' \
+    -e 's|^# Managed by NPMCtl\. Official default: Docker bridge network with published ports\.$|# 由 NPMCtl 管理。官方默认：Docker 桥接网络，并发布所需端口。|' \
+    -n '1,120p' "$COMPOSE_FILE"
 }
 
 show_logs() {
@@ -283,7 +311,9 @@ show_listeners() {
   command -v ss >/dev/null 2>&1 && ss -ltnp 2>/dev/null | sed -n '1p;/docker-proxy/p;/:80 /p;/:81 /p;/:443 /p' || warn '未找到 ss。'
   if command -v docker >/dev/null 2>&1; then
     printf '\n容器名称\t状态\t端口映射\n'
-    docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
+    while IFS=$'\t' read -r name state ports; do
+      printf '%s\t%s\t%s\n' "$name" "$(localize_container_state "$state")" "$ports"
+    done < <(docker ps --format '{{.Names}}\t{{.State}}\t{{.Ports}}' 2>/dev/null)
   fi
 }
 
@@ -293,17 +323,17 @@ show_backend_guidance() {
   printf '\n%s后端连接建议%s\n' "$BOLD" "$RESET"
   if [[ "$mode" == host ]]; then
     cat <<'GUIDE'
-当前为 host 模式。NPM 与宿主机共享网络命名空间：
+当前为宿主机网络（host）。NPM 与宿主机共享网络命名空间：
   - 原生服务仅监听 127.0.0.1 时，在 NPM 中填写 127.0.0.1:服务端口。
   - Docker 应用可发布端口到宿主机，再以 127.0.0.1:宿主机端口访问。
   - 宿主机的 80、81、443 不可再由其他服务占用。
 GUIDE
   else
     cat <<'GUIDE'
-当前为官方默认 bridge 模式：
+当前为官方默认桥接网络（bridge）：
   - 容器内的 127.0.0.1 不是宿主机；不能直接代理宿主机回环服务。
   - 容器化后端优先让 NPM 与应用加入同一 Docker 网络，并填写 服务名:内部端口。
-  - 宿主机后端需监听可被 Docker 网关访问的地址，或切换到 host 模式。
+  - 宿主机后端需监听可被 Docker 网关访问的地址，或切换到宿主机网络（host）。
 GUIDE
   fi
 }
@@ -367,7 +397,45 @@ status_line() {
   local mode state
   mode="$(current_network_mode)"
   state="$(docker inspect --format '{{.State.Status}}' nginx-proxy-manager 2>/dev/null || printf '未部署')"
-  printf 'NPM：%s | 网络：%s | NPMCtl：%s\n' "$state" "$mode" "$MANAGER_VERSION"
+  printf 'Docker：%s | NPM：%s | 容器：%s\n' \
+    "$(docker_runtime_status)" \
+    "$(npm_deployment_status)" \
+    "$(colorize_container_state "$state")"
+  printf '网络：%s | NPMCtl：%s\n' \
+    "${BLUE}$(localize_network_mode "$mode")${RESET}" \
+    "$MANAGER_VERSION"
+}
+
+docker_runtime_status() {
+  if ! command -v docker >/dev/null 2>&1; then
+    printf '%s未安装%s' "$RED" "$RESET"
+  elif docker info >/dev/null 2>&1; then
+    printf '%s已就绪%s' "$GREEN" "$RESET"
+  else
+    printf '%s服务不可用%s' "$RED" "$RESET"
+  fi
+}
+
+npm_deployment_status() {
+  if command -v docker >/dev/null 2>&1 \
+      && docker inspect nginx-proxy-manager >/dev/null 2>&1; then
+    printf '%s已部署%s' "$GREEN" "$RESET"
+  elif [[ -f "$COMPOSE_FILE" ]]; then
+    printf '%s配置已创建%s' "$YELLOW" "$RESET"
+  else
+    printf '%s未部署%s' "$YELLOW" "$RESET"
+  fi
+}
+
+colorize_container_state() {
+  local state="$1" color
+  case "$state" in
+    running) color="$GREEN" ;;
+    created|restarting|paused|未部署) color="$YELLOW" ;;
+    exited|dead) color="$RED" ;;
+    *) color="$YELLOW" ;;
+  esac
+  printf '%s%s%s' "$color" "$(localize_container_state "$state")" "$RESET"
 }
 
 draw_menu() {
@@ -378,9 +446,9 @@ draw_menu() {
   status_line
   printf '%s--------------------------------------------%s\n' "$BLUE" "$RESET"
   printf '  1. 查看运行状态与 Compose 配置\n'
-  printf '  2. 安装 Docker Engine 与 Compose\n'
+  printf '  2. 安装 Docker 引擎与 Compose\n'
   printf '  3. 部署或更新 Nginx Proxy Manager\n'
-  printf '  4. 切换网络模式（bridge / host）\n'
+  printf '  4. 切换网络模式（桥接网络 / 宿主机网络）\n'
   printf '  5. 查看后端连接建议\n'
   printf '  6. 查看 NPM 容器日志\n'
   printf '  7. 查看端口监听与 Docker 映射\n'
