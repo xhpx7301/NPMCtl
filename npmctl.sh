@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.1"
+readonly MANAGER_VERSION="1.1.2"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -448,15 +448,15 @@ draw_menu() {
   printf '%s============================================%s\n' "$BLUE" "$RESET"
   status_line
   printf '%s--------------------------------------------%s\n' "$BLUE" "$RESET"
-  printf '  1. 查看运行状态与 Compose 配置\n'
-  printf '  2. 安装 Docker 引擎与 Compose\n'
-  printf '  3. 部署或更新 Nginx Proxy Manager\n'
-  printf '  4. 切换网络模式（桥接网络 / 宿主机网络）\n'
-  printf '  5. 查看后端连接建议\n'
-  printf '  6. 查看 NPM 容器日志\n'
-  printf '  7. 查看端口监听与 Docker 映射\n'
-  printf '  8. 备份 NPM 数据与证书\n'
-  printf '  9. 更新 NPMCtl 管理菜单\n'
+  printf '  1. 更新 NPMCtl 管理菜单\n'
+  printf '  2. 查看运行状态与 Compose 配置\n'
+  printf '  3. 安装 Docker 与 Compose\n'
+  printf '  4. 部署或更新 Nginx Proxy Manager\n'
+  printf '  5. 切换网络模式（桥接网络 / 宿主机网络）\n'
+  printf '  6. 查看后端连接建议\n'
+  printf '  7. 查看 NPM 容器日志\n'
+  printf '  8. 查看端口监听与 Docker 映射\n'
+  printf '  9. 备份 NPM 数据与证书\n'
   printf ' 10. 卸载 NPM 或 NPMCtl\n'
   printf '  0. 退出\n'
   printf '%s============================================%s\n' "$BLUE" "$RESET"
@@ -470,15 +470,15 @@ main_menu() {
     read -r -p '请选择 [0-10]：' choice || exit 0
     printf '\n'
     case "$choice" in
-      1) show_status; pause_menu ;;
-      2) install_docker; pause_menu ;;
-      3) deploy_npm "$(current_network_mode)"; pause_menu ;;
-      4) switch_network_mode; pause_menu ;;
-      5) show_backend_guidance; pause_menu ;;
-      6) show_logs; pause_menu ;;
-      7) show_listeners; pause_menu ;;
-      8) backup_data; pause_menu ;;
-      9) update_manager; pause_menu ;;
+      1) update_manager; pause_menu ;;
+      2) show_status; pause_menu ;;
+      3) install_docker; pause_menu ;;
+      4) deploy_npm "$(current_network_mode)"; pause_menu ;;
+      5) switch_network_mode; pause_menu ;;
+      6) show_backend_guidance; pause_menu ;;
+      7) show_logs; pause_menu ;;
+      8) show_listeners; pause_menu ;;
+      9) backup_data; pause_menu ;;
       10) uninstall_menu; pause_menu ;;
       0) exit 0 ;;
       *) warn '无效选项。'; pause_menu ;;
