@@ -31,7 +31,7 @@ warn() { printf '%s[注意]%s %s\n' "$YELLOW" "$RESET" "$*"; }
 error() { printf '%s[错误]%s %s\n' "$RED" "$RESET" "$*" >&2; }
 
 pause_menu() { printf '\n'; read -r -p '按 Enter 键返回主菜单...' _ || true; }
-confirm_action() { local answer; read -r -p "$1 [y/N]：" answer || return 1; [[ "$answer" =~ ^[Yy]$ ]]; }
+confirm_action() { local answer; read -r -p "$1 [y/n，回车默认n]：" answer || return 1; [[ "$answer" =~ ^[Yy]$ ]]; }
 timestamp() { date '+%Y%m%d-%H%M%S'; }
 manager_source() { readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s\n' "${BASH_SOURCE[0]}"; }
 
@@ -202,7 +202,7 @@ port_conflicts() {
 }
 
 deploy_npm() {
-  local mode="$1" previous_mode=''
+  local mode="$1" previous_mode='' first_deploy=0
   require_docker || return 1
   [[ "$mode" == bridge || "$mode" == host ]] || { error '网络模式必须为 bridge 或 host。'; return 1; }
   [[ "$mode" != host || "$(uname -s)" == Linux ]] || { error 'network_mode: host 仅支持 Linux Docker。'; return 1; }
@@ -220,6 +220,7 @@ deploy_npm() {
     (cd "$INSTALL_DIR" && docker compose down) || { error '停止旧容器失败，未修改配置。'; return 1; }
   else
     confirm_action "确认以 ${mode} 网络模式部署 Nginx Proxy Manager？" || { info '已取消。'; return 0; }
+    [[ -f "${DATA_DIR}/database.sqlite" ]] || first_deploy=1
   fi
   write_compose_file "$mode"
   if (cd "$INSTALL_DIR" && docker compose config >/dev/null && docker compose up -d); then
@@ -229,10 +230,19 @@ deploy_npm() {
     else
       info '管理地址：http://服务器IP:81；容器化后端优先通过共享 Docker 网络访问。'
     fi
+    (( first_deploy == 0 )) || show_initial_account_guidance
   else
     error 'NPM 启动失败。已保留部署文件备份；请查看日志并检查端口占用。'
     return 1
   fi
+}
+
+show_initial_account_guidance() {
+  printf '\n%s首次登录提示%s\n' "$BOLD" "$RESET"
+  printf '请在浏览器打开：http://服务器IP:81\n'
+  printf '当前新版 Nginx Proxy Manager 首次启动会显示“创建管理员账户”页面。\n'
+  printf '填写姓名、邮箱和新密码即可；没有应由 NPMCtl 显示的固定默认账号或密码。\n'
+  warn '请妥善保存管理员密码。NPMCtl 不保存、显示或修改 NPM 用户凭据。'
 }
 
 switch_network_mode() {
@@ -316,8 +326,9 @@ uninstall_menu() {
   local choice
   printf '\n  1. 停止并删除 NPM 容器（保留数据与配置）\n'
   printf '  2. 删除 NPMCtl 管理入口（保留 NPM、数据与配置）\n'
+  printf '  3. 完全卸载 NPM 与 NPMCtl（删除数据、证书和备份）\n'
   printf '  0. 返回\n'
-  read -r -p '请选择 [0-2]：' choice
+  read -r -p '请选择 [0-3]：' choice
   case "$choice" in
     1)
       require_docker || return 1
@@ -330,6 +341,22 @@ uninstall_menu() {
       rm -f "$MANAGER_COMMAND" "$MANAGER_SCRIPT"
       rmdir "$MANAGER_DIR" 2>/dev/null || true
       success 'NPMCtl 管理入口已删除。'
+      ;;
+    3)
+      warn '此操作会永久删除 NPM 容器、NPMCtl、/opt/npmctl 中的数据与证书，以及 /var/backups/npmctl。'
+      confirm_action '确认完全卸载？此操作不可恢复。' || { info '已取消。'; return 0; }
+      if command -v docker >/dev/null 2>&1; then
+        if [[ -f "$COMPOSE_FILE" ]]; then
+          (cd "$INSTALL_DIR" && docker compose down --remove-orphans) || docker rm -f nginx-proxy-manager 2>/dev/null || true
+        else
+          docker rm -f nginx-proxy-manager 2>/dev/null || true
+        fi
+        docker image rm "$NPM_IMAGE" 2>/dev/null || true
+      fi
+      rm -rf -- "$INSTALL_DIR" "$BACKUP_DIR"
+      rm -f -- "$MANAGER_COMMAND" "$MANAGER_SCRIPT"
+      rmdir "$MANAGER_DIR" 2>/dev/null || true
+      success 'Nginx Proxy Manager、NPMCtl、运行数据和备份已完全删除。'
       ;;
     0) return 0 ;;
     *) error '无效选项。'; return 1 ;;
