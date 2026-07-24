@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.2"
+readonly MANAGER_VERSION="1.1.3"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -455,7 +455,7 @@ draw_menu() {
   printf '  5. 切换网络模式（桥接网络 / 宿主机网络）\n'
   printf '  6. 查看后端连接建议\n'
   printf '  7. 查看 NPM 容器日志\n'
-  printf '  8. 查看端口监听与 Docker 映射\n'
+  printf '  8. 查看 NPM 端口监听与 Docker 映射\n'
   printf '  9. 备份 NPM 数据与证书\n'
   printf ' 10. 卸载 NPM 或 NPMCtl\n'
   printf '  0. 退出\n'
