@@ -87,6 +87,6 @@ NPM 的用户、权限、邮箱和密码应在其管理面板中维护。NPMCtl 
 
 ## 卸载
 
-菜单“卸载 NPM 或 NPMCtl”提供三种范围：仅删除 NPM 容器、仅删除 NPMCtl 管理入口，或完全卸载。完全卸载需要输入 `y` 确认，直接回车或输入 `n` 会取消；随后会停止并删除 NPM 容器与镜像，并永久删除 `/opt/npmctl` 中的 Compose 配置、SQLite 数据、证书，以及 `/var/backups/npmctl` 的备份。
+菜单“卸载 NPM、Docker 或 NPMCtl”提供四种范围：仅删除 NPM 容器、仅删除 NPMCtl 管理入口、完全卸载 NPM 与 NPMCtl，或完全卸载 Docker 与 Compose。Docker 完全卸载需要输入 `y` 确认，直接回车或输入 `n` 会取消；确认后会停止并删除本机所有 Docker 容器、镜像、卷和网络，卸载 Engine/Compose 软件包并删除 Docker 运行时数据目录。NPMCtl 管理入口和 `/opt/npmctl` 中的数据不会被该选项删除。
 
 生产环境中只需对外放行 80 与 443；应以防火墙、私有网络或额外认证限制 81 管理端口。变更前请先通过菜单创建备份，并将部署文件与数据目录纳入服务器备份策略。

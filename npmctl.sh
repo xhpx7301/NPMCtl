@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.6"
+readonly MANAGER_VERSION="1.1.7"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -128,6 +128,63 @@ install_docker() {
   fi
   systemctl enable --now docker || { error "已执行 ${manager} 安装，但 Docker 服务启动失败。"; return 1; }
   require_docker && success 'Docker Engine 与 Compose 已就绪。'
+}
+
+uninstall_docker() {
+  local manager package
+  local -a packages=() candidates=()
+
+  warn '此操作会停止并删除本机所有 Docker 容器、镜像、卷和网络。'
+  warn '同时会卸载 Docker Engine、Docker Compose，并删除 Docker 运行时数据。'
+  warn 'NPMCtl 管理入口和 /opt/npmctl 中的数据不会被此项删除。'
+  confirm_action '确认完全卸载 Docker 与 Compose？此操作不可恢复。' || { info '已取消。'; return 0; }
+
+  if command -v docker >/dev/null 2>&1; then
+    if docker info >/dev/null 2>&1; then
+      docker ps -aq | xargs -r docker rm -f >/dev/null 2>&1 || true
+      docker system prune -af --volumes >/dev/null 2>&1 || true
+    else
+      warn 'Docker 服务当前不可用，将继续清理软件包和运行时目录。'
+    fi
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now docker docker.socket containerd 2>/dev/null || true
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    manager='apt-get'
+    candidates=(docker.io docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose-v2 docker-compose docker-ce-rootless-extras)
+    if command -v dpkg-query >/dev/null 2>&1; then
+      for package in "${candidates[@]}"; do
+        dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' && packages+=("$package")
+      done
+    fi
+    ((${#packages[@]} > 0)) && apt-get purge -y "${packages[@]}" 2>/dev/null || true
+    apt-get autoremove -y 2>/dev/null || true
+  elif command -v dnf >/dev/null 2>&1; then
+    manager='dnf'
+    candidates=(docker docker-client docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose-v2 docker-compose docker-ce-rootless-extras)
+    for package in "${candidates[@]}"; do
+      rpm -q "$package" >/dev/null 2>&1 && packages+=("$package")
+    done
+    ((${#packages[@]} > 0)) && dnf remove -y "${packages[@]}" 2>/dev/null || true
+  elif command -v yum >/dev/null 2>&1; then
+    manager='yum'
+    candidates=(docker docker-client docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose-v2 docker-compose docker-ce-rootless-extras)
+    for package in "${candidates[@]}"; do
+      rpm -q "$package" >/dev/null 2>&1 && packages+=("$package")
+    done
+    ((${#packages[@]} > 0)) && yum remove -y "${packages[@]}" 2>/dev/null || true
+  else
+    manager='未知软件包管理器'
+    warn '未识别 apt、dnf 或 yum；将继续删除 Docker 运行时文件。'
+  fi
+
+  rm -rf -- /var/lib/docker /var/lib/containerd /etc/docker /etc/containerd
+  rm -f -- /usr/local/bin/docker-compose /usr/libexec/docker/cli-plugins/docker-compose /usr/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose /root/.docker/cli-plugins/docker-compose
+  rm -f -- /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc /etc/yum.repos.d/docker-ce.repo
+  success "Docker Engine 与 Compose 已完全卸载（使用 ${manager} 清理软件包）。"
 }
 
 config_value() { [[ -f "$CONFIG_FILE" ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -n 1 || true; }
@@ -367,8 +424,9 @@ uninstall_menu() {
   printf '\n  1. 停止并删除 NPM 容器（保留数据与配置）\n'
   printf '  2. 删除 NPMCtl 管理入口（保留 NPM、数据与配置）\n'
   printf '  3. 完全卸载 NPM 与 NPMCtl（删除数据、证书和备份）\n'
+  printf '  4. 完全卸载 Docker 与 Compose（删除所有 Docker 资源和运行时数据）\n'
   printf '  0. 返回\n'
-  read -r -p '请选择 [0-3]：' choice
+  read -r -p '请选择 [0-4]：' choice
   case "$choice" in
     1)
       require_docker || return 1
@@ -397,6 +455,9 @@ uninstall_menu() {
       rm -f -- "$MANAGER_COMMAND" "$MANAGER_SCRIPT"
       rmdir "$MANAGER_DIR" 2>/dev/null || true
       success 'Nginx Proxy Manager、NPMCtl、运行数据和备份已完全删除。'
+      ;;
+    4)
+      uninstall_docker
       ;;
     0) return 0 ;;
     *) error '无效选项。'; return 1 ;;
@@ -465,7 +526,7 @@ draw_menu() {
   printf '  7. 查看 NPM 容器日志\n'
   printf '  8. 查看 NPM 端口监听与 Docker 映射\n'
   printf '  9. 备份 NPM 数据与证书\n'
-  printf ' 10. 卸载 NPM 或 NPMCtl\n'
+  printf ' 10. 卸载 NPM、Docker 或 NPMCtl\n'
   printf '  0. 退出\n'
   printf '%s============================================%s\n' "$BLUE" "$RESET"
   printf '提示：退出后可在终端输入 npmctl 再次打开本菜单。\n'
