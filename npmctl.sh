@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.4.1"
+readonly MANAGER_VERSION="1.4.2"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -2481,16 +2481,14 @@ gateway_settings_menu() {
     printf '  1. 查看当前网关与网络\n'
     printf '  2. 断开 NPM 网络（移除对应网关）\n'
     printf '  3. 连接已有 Docker 网络（新增网关）\n'
-    printf '  4. 查询所有网关及其容器服务\n'
-    printf '  5. 查看服务加入的网络与中转路径\n'
+    printf '  4. 本机 TCP 服务监听地址\n'
     printf '  0. 返回\n'
-    read -r -p '请选择 [0-5]：' choice || return 0
+    read -r -p '请选择 [0-4]：' choice || return 0
     case "$choice" in
       1) show_gateway_networks; pause_menu ;;
       2) disconnect_npm_network; pause_menu ;;
       3) connect_npm_network; pause_menu ;;
-      4) show_all_gateway_services; pause_menu ;;
-      5) show_container_network_paths; pause_menu ;;
+      4) show_all_local_listeners; pause_menu ;;
       0) return 0 ;;
       *) error '无效选项。'; pause_menu ;;
     esac
