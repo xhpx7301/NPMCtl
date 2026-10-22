@@ -8,6 +8,7 @@
 | --- | --- |
 | Docker 部署 | 使用 `jc21/nginx-proxy-manager:latest` 创建 Nginx Proxy Manager。默认采用官方 bridge 网络、SQLite 数据库与 80、81、443 端口映射。 |
 | 网络模式切换 | 可在默认 `bridge` 与 Linux `network_mode: host` 之间切换，并在更改前备份 Compose 配置。 |
+| 网关设置 | 查看 NPM 容器连接的 Docker 网络、网关和容器 IP，并连接或断开已有 Docker 网络。 |
 | 原生后端支持 | host 模式下，NPM 可直接代理监听在宿主机 `127.0.0.1` 的服务。 |
 | 日常维护 | 查看容器状态、日志、端口监听，更新管理脚本，以及备份 NPM 的 SQLite 数据和 Let's Encrypt 证书。 |
 | 配置保护 | 切换网络模式会备份旧 Compose 和 NPMCtl 配置；卸载容器默认保留 NPM 数据，完全卸载需确认。 |
@@ -66,6 +67,10 @@ export NPMCTL_SOURCE_URL="https://<HOST>/<PATH>/npmctl.sh"
 切换模式会停止并重建 NPM 容器，但不会删除 `/opt/npmctl/data` 或 `/opt/npmctl/letsencrypt` 中的数据。请在维护窗口执行，并确认宿主机端口 80、81、443 没有被其他服务占用。
 
 在 bridge 模式下，优先让 NPM 与应用容器共享 Docker 网络，然后将 NPM 上游填写为 `Compose服务名:容器内部端口`。不要为了让 NPM 访问而把应用端口直接暴露到公网。
+
+### 网关设置
+
+主菜单的“网关设置”可以查看 NPM 容器当前连接的 Docker 网络、网关地址和容器 IP，也可以断开某个网络或连接已有网络。Docker 网关属于网络本身，不能单独修改；断开网络会移除 NPM 在该网络上的网关，连接网络会新增对应网关。这类操作直接修改当前容器的网络连接，容器被 Compose 重建后如需保留额外网络，应在对应 Compose 配置中声明。删除网络本身前，请先确认没有其他容器依赖它。
 
 ## 文件位置
 
