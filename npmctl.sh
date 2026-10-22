@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.8"
+readonly MANAGER_VERSION="1.1.9"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -428,6 +428,65 @@ show_all_gateway_services() {
   ((found == 1)) || warn '未找到 Docker 网络。'
 }
 
+show_one_container_network_path() {
+  local container="$1" mode networks ports network ip gateway
+  printf '\n%s服务：%s%s\n' "$BOLD" "$container" "$RESET"
+  mode="$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container" 2>/dev/null || true)"
+  printf '网络模式：%s\n' "${mode:--}"
+  networks="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}}|{{$network.IPAddress}}|{{$network.Gateway}}{{"\n"}}{{end}}' "$container" 2>/dev/null || true)"
+  if [[ -n "$networks" ]]; then
+    printf '加入的网络：\n'
+    while IFS='|' read -r network ip gateway; do
+      [[ -n "$network" ]] || continue
+      printf '  %s：容器 IP %s，网关 %s\n' "$network" "${ip:--}" "${gateway:--}"
+      if [[ -n "$gateway" ]]; then
+        printf '    路径：容器 %s → %s → 网关 %s → 宿主机/外部网络\n' "${ip:--}" "$network" "$gateway"
+      else
+        printf '    路径：容器 → %s（该网络没有可用的 Docker 网关）\n' "$network"
+      fi
+    done <<< "$networks"
+  elif [[ "$mode" == host ]]; then
+    printf '加入的网络：host（与宿主机共享网络命名空间）\n'
+    printf '路径：容器服务 ↔ 宿主机网络，不经过 Docker bridge 网关。\n'
+  else
+    printf '加入的网络：无\n'
+  fi
+  ports="$(docker port "$container" 2>/dev/null || true)"
+  if [[ -n "$ports" ]]; then
+    printf '宿主机端口中转：\n'
+    while IFS= read -r port; do
+      [[ -n "$port" ]] || continue
+      printf '  %s\n' "$port"
+    done <<< "$ports"
+    printf '路径：外部/宿主机地址 → docker-proxy（如存在）→ 容器端口。\n'
+  else
+    printf '宿主机端口中转：无 Docker ports 发布。\n'
+  fi
+}
+
+show_container_network_paths() {
+  local selected container index
+  local -a containers=()
+  mapfile -t containers < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
+  ((${#containers[@]} > 0)) || { warn '未找到 Docker 容器。'; return 0; }
+
+  printf '\n%s服务网络与中转路径%s\n' "$BOLD" "$RESET"
+  printf '选择具体服务查看其网络、网关和端口中转；直接回车查看全部服务。\n'
+  for index in "${!containers[@]}"; do
+    printf '  %d. %s\n' "$((index + 1))" "${containers[$index]}"
+  done
+  read -r -p "请选择 [1-${#containers[@]}，回车查看全部，0取消]：" selected || return 0
+  [[ "$selected" == 0 ]] && return 0
+  if [[ -z "$selected" ]]; then
+    for container in "${containers[@]}"; do
+      show_one_container_network_path "$container"
+    done
+    return 0
+  fi
+  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#containers[@]})) || { error '无效选项。'; return 1; }
+  show_one_container_network_path "${containers[$((selected - 1))]}"
+}
+
 disconnect_npm_network() {
   local selected network index
   local -a networks=()
@@ -498,13 +557,15 @@ gateway_settings_menu() {
     printf '  2. 断开 NPM 网络（移除对应网关）\n'
     printf '  3. 连接已有 Docker 网络（新增网关）\n'
     printf '  4. 查询所有网关及其容器服务\n'
+    printf '  5. 查看服务加入的网络与中转路径\n'
     printf '  0. 返回\n'
-    read -r -p '请选择 [0-4]：' choice || return 0
+    read -r -p '请选择 [0-5]：' choice || return 0
     case "$choice" in
       1) show_gateway_networks; pause_menu ;;
       2) disconnect_npm_network; pause_menu ;;
       3) connect_npm_network; pause_menu ;;
       4) show_all_gateway_services; pause_menu ;;
+      5) show_container_network_paths; pause_menu ;;
       0) return 0 ;;
       *) error '无效选项。'; pause_menu ;;
     esac
