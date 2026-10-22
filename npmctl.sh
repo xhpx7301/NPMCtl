@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.4.4"
+readonly MANAGER_VERSION="1.4.5"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -2412,40 +2412,87 @@ show_container_network_paths() {
   show_one_container_network_path "${containers[$((selected - 1))]}"
 }
 
-select_docker_container() {
-  local selected index
-  local -a containers=()
-  mapfile -t containers < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
-  ((${#containers[@]} > 0)) || { warn '未找到 Docker 容器。'; return 1; }
+select_shared_docker_network() {
+  local selected network driver gateway members member_count index
+  local -a networks=()
 
-  printf '\nDocker 容器服务：\n'
-  for index in "${!containers[@]}"; do
-    printf '  %d. %s\n' "$((index + 1))" "${containers[$index]}"
+  while IFS= read -r network; do
+    [[ -n "$network" && "$network" != host && "$network" != none ]] || continue
+    networks+=("$network")
+  done < <(docker network ls --format '{{.Name}}' 2>/dev/null)
+  ((${#networks[@]} > 0)) || { warn '未找到可用于共享的 Docker bridge 网络。'; return 1; }
+
+  printf '\nDocker 共享网络：\n'
+  for index in "${!networks[@]}"; do
+    network="${networks[$index]}"
+    driver="$(docker network inspect --format '{{.Driver}}' "$network" 2>/dev/null || printf '%s' '未知')"
+    gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$network" 2>/dev/null || true)"
+    members="$(docker network inspect --format '{{range $id, $container := .Containers}}{{$container.Name}}{{"\n"}}{{end}}' "$network" 2>/dev/null || true)"
+    member_count=0
+    [[ -z "$members" ]] || member_count="$(printf '%s\n' "$members" | awk 'NF { count++ } END { print count + 0 }')"
+    printf '  %d. %s（驱动：%s，网关：%s，服务：%s 个）\n' \
+      "$((index + 1))" "$network" "$driver" "${gateway:--}" "$member_count"
   done
-  read -r -p "选择服务 [1-${#containers[@]}，回车取消]：" selected || return 1
+  read -r -p "选择网络 [1-${#networks[@]}，回车取消]：" selected || return 1
   [[ -n "$selected" ]] || return 1
-  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#containers[@]})) || { error '无效选项。'; return 1; }
-  SELECTED_DOCKER_CONTAINER="${containers[$((selected - 1))]}"
+  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#networks[@]})) || { error '无效选项。'; return 1; }
+  SELECTED_DOCKER_NETWORK="${networks[$((selected - 1))]}"
+}
+
+connect_service_network() {
+  local selected network container is_attached index
+  local -a containers=() candidates=()
+  select_shared_docker_network || return 0
+  network="$SELECTED_DOCKER_NETWORK"
+
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    docker_container_has_network "$container" "$network" || candidates+=("$container")
+  done < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
+  ((${#candidates[@]} > 0)) || { warn "网络 ${network} 已包含所有 Docker 容器服务。"; return 0; }
+
+  printf '\n网络 %s 中尚未加入的服务：\n' "$network"
+  for index in "${!candidates[@]}"; do
+    printf '  %d. %s\n' "$((index + 1))" "${candidates[$index]}"
+  done
+  read -r -p "选择要加入的服务 [1-${#candidates[@]}，回车取消]：" selected || return 0
+  [[ -n "$selected" ]] || return 0
+  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#candidates[@]})) || { error '无效选项。'; return 1; }
+  container="${candidates[$((selected - 1))]}"
+  confirm_action "确认将服务 ${container} 加入网络 ${network}？" || { info '已取消。'; return 0; }
+  if docker network connect "$network" "$container"; then
+    success "已将服务 ${container} 加入网络 ${network}。"
+    info '该网络连接由 Docker 即时修改；Compose 重建容器后可能需要重新配置。'
+  else
+    error "无法将服务 ${container} 加入网络 ${network}。"
+    return 1
+  fi
 }
 
 disconnect_service_network() {
-  local container selected network index
-  local -a networks=()
-  select_docker_container || return 0
-  container="$SELECTED_DOCKER_CONTAINER"
-  mapfile -t networks < <(docker_container_network_names "$container")
-  ((${#networks[@]} > 0)) || { warn "服务 ${container} 当前没有可断开的 Docker bridge 网络（可能使用 host/none 网络模式）。"; return 0; }
+  local selected network container member_ip index
+  local -a members=() member_rows=()
+  select_shared_docker_network || return 0
+  network="$SELECTED_DOCKER_NETWORK"
 
-  printf '\n服务 %s 当前连接的 Docker 网络：\n' "$container"
-  for index in "${!networks[@]}"; do
-    printf '  %d. %s\n' "$((index + 1))" "${networks[$index]}"
+  while IFS='|' read -r container member_ip; do
+    [[ -n "$container" ]] || continue
+    member_rows+=("$container|$member_ip")
+    members+=("$container")
+  done < <(docker network inspect --format '{{range $id, $container := .Containers}}{{$container.Name}}|{{$container.IPv4Address}}{{"\n"}}{{end}}' "$network" 2>/dev/null)
+  ((${#members[@]} > 0)) || { warn "网络 ${network} 当前没有容器服务。"; return 0; }
+
+  printf '\n网络 %s 中的服务：\n' "$network"
+  for index in "${!member_rows[@]}"; do
+    IFS='|' read -r container member_ip <<< "${member_rows[$index]}"
+    printf '  %d. %s（IP：%s）\n' "$((index + 1))" "$container" "${member_ip:--}"
   done
-  read -r -p "选择要移除的网络 [1-${#networks[@]}，回车取消]：" selected || return 0
+  read -r -p "选择要移除的服务 [1-${#members[@]}，回车取消]：" selected || return 0
   [[ -n "$selected" ]] || return 0
-  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#networks[@]})) || { error '无效选项。'; return 1; }
-  network="${networks[$((selected - 1))]}"
-  if ((${#networks[@]} == 1)); then
-    warn "这是服务 ${container} 当前唯一的 Docker 网络；移除后它将失去 bridge 网络通信能力。"
+  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#members[@]})) || { error '无效选项。'; return 1; }
+  container="${members[$((selected - 1))]}"
+  if [[ "$container" == 'nginx-proxy-manager' ]]; then
+    warn '移除 NPM 后，它将无法通过该网络访问同网络服务。'
   fi
   confirm_action "确认将服务 ${container} 从网络 ${network} 移除？" || { info '已取消。'; return 0; }
   if docker network disconnect "$network" "$container"; then
@@ -2457,43 +2504,6 @@ disconnect_service_network() {
   fi
 }
 
-connect_service_network() {
-  local container selected network driver scope attached is_attached index
-  local -a networks=() attached_networks=()
-  select_docker_container || return 0
-  container="$SELECTED_DOCKER_CONTAINER"
-  mapfile -t attached_networks < <(docker_container_network_names "$container")
-  while IFS= read -r network; do
-    [[ -n "$network" ]] || continue
-    is_attached=0
-    for attached in "${attached_networks[@]}"; do
-      [[ "$network" == "$attached" ]] && { is_attached=1; break; }
-    done
-    ((is_attached == 0)) && networks+=("$network")
-  done < <(docker network ls --format '{{.Name}}' 2>/dev/null)
-
-  ((${#networks[@]} > 0)) || { warn "服务 ${container} 已连接所有可用 Docker 网络。"; return 0; }
-  printf '\n可供服务 %s 加入的 Docker 网络：\n' "$container"
-  for index in "${!networks[@]}"; do
-    network="${networks[$index]}"
-    driver="$(docker network inspect --format '{{.Driver}}' "$network" 2>/dev/null || printf '%s' '未知')"
-    scope="$(docker network inspect --format '{{.Scope}}' "$network" 2>/dev/null || printf '%s' '未知')"
-    printf '  %d. %s（驱动：%s，范围：%s）\n' "$((index + 1))" "$network" "$driver" "$scope"
-  done
-  read -r -p "选择要加入的网络 [1-${#networks[@]}，回车取消]：" selected || return 0
-  [[ -n "$selected" ]] || return 0
-  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#networks[@]})) || { error '无效选项。'; return 1; }
-  network="${networks[$((selected - 1))]}"
-  confirm_action "确认将服务 ${container} 加入网络 ${network}？" || { info '已取消。'; return 0; }
-  if docker network connect "$network" "$container"; then
-    success "已将服务 ${container} 加入网络 ${network}。"
-    info '该网络连接由 Docker 即时修改；Compose 重建容器后可能需要重新配置。'
-  else
-    error "无法将服务 ${container} 加入网络 ${network}。"
-    return 1
-  fi
-}
-
 gateway_settings_menu() {
   local choice
   require_docker || return 1
@@ -2501,15 +2511,15 @@ gateway_settings_menu() {
   while true; do
     printf '\n%s网关设置%s\n' "$BOLD" "$RESET"
     printf '  1. 查看当前网关与网络\n'
-    printf '  2. 从 Docker 网络移除服务\n'
-    printf '  3. 将服务加入 Docker 网络\n'
+    printf '  2. 将服务加入 Docker 网络\n'
+    printf '  3. 从 Docker 网络移除服务\n'
     printf '  4. 本机 TCP 服务监听地址\n'
     printf '  0. 返回\n'
     read -r -p '请选择 [0-4]：' choice || return 0
     case "$choice" in
       1) show_gateway_networks; pause_menu ;;
-      2) disconnect_service_network; pause_menu ;;
-      3) connect_service_network; pause_menu ;;
+      2) connect_service_network; pause_menu ;;
+      3) disconnect_service_network; pause_menu ;;
       4) show_all_local_listeners; pause_menu ;;
       0) return 0 ;;
       *) error '无效选项。'; pause_menu ;;
