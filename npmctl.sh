@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.1.9"
+readonly MANAGER_VERSION="1.2.0"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -385,7 +385,7 @@ show_listeners() {
 }
 
 show_gateway_networks() {
-  local rows name gateway ip
+  local rows name gateway ip members member member_ip
   if ! docker inspect nginx-proxy-manager >/dev/null 2>&1; then
     error 'NPM 容器不存在，无法读取网关设置。'
     return 1
@@ -401,8 +401,23 @@ show_gateway_networks() {
     [[ -n "$name" ]] || continue
     ((index += 1))
     printf '%-4s %-46s %-16s %-16s\n' "$index" "$name" "${gateway:--}" "${ip:--}"
+    members="$(docker network inspect --format '{{range $id, $container := .Containers}}{{$container.Name}}|{{$container.IPv4Address}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)"
+    if [[ -n "$members" ]]; then
+      printf '     同网络容器：\n'
+      while IFS='|' read -r member member_ip; do
+        [[ -n "$member" ]] || continue
+        if [[ "$member" == "nginx-proxy-manager" ]]; then
+          printf '       - %s（当前 NPM，IP %s）\n' "$member" "${member_ip:--}"
+        else
+          printf '       - %s（IP %s）\n' "$member" "${member_ip:--}"
+        fi
+      done <<< "$members"
+    else
+      printf '     同网络容器：无\n'
+    fi
   done <<< "$rows"
-  printf '\n网关地址由 Docker 网络决定；本菜单通过连接或断开网络来修改 NPM 的网络设置。\n'
+  printf '\n网关地址由 Docker 网络决定；同网络容器可直接使用容器名和容器端口互相访问。\n'
+  printf '本菜单也可以连接或断开 NPM 的 Docker 网络；Compose 重建后如需保留额外网络，应在 Compose 中声明。\n'
 }
 
 show_all_gateway_services() {
