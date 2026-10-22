@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.4.2"
+readonly MANAGER_VERSION="1.4.3"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -2303,7 +2303,7 @@ show_gateway_networks() {
   done <<< "$rows"
   show_docker_default_bridge_network
   printf '\n网关地址由 Docker 网络决定；同网络容器可直接使用容器名和容器端口互相访问。\n'
-  printf '本菜单也可以连接或断开 NPM 的 Docker 网络；Compose 重建后如需保留额外网络，应在 Compose 中声明。\n'
+  printf '本菜单也可以将任意容器服务连接到 Docker 网络或从网络移除；Compose 重建后如需保留额外网络，应在 Compose 中声明。\n'
 }
 
 show_docker_default_bridge_network() {
@@ -2412,36 +2412,57 @@ show_container_network_paths() {
   show_one_container_network_path "${containers[$((selected - 1))]}"
 }
 
-disconnect_npm_network() {
-  local selected network index
-  local -a networks=()
-  mapfile -t networks < <(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' nginx-proxy-manager 2>/dev/null)
-  ((${#networks[@]} > 0)) || { warn 'NPM 当前没有可断开的 Docker 网络。'; return 0; }
+select_docker_container() {
+  local selected index
+  local -a containers=()
+  mapfile -t containers < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
+  ((${#containers[@]} > 0)) || { warn '未找到 Docker 容器。'; return 1; }
 
-  printf '\n当前连接的 Docker 网络：\n'
+  printf '\nDocker 容器服务：\n'
+  for index in "${!containers[@]}"; do
+    printf '  %d. %s\n' "$((index + 1))" "${containers[$index]}"
+  done
+  read -r -p "选择服务 [1-${#containers[@]}，回车取消]：" selected || return 1
+  [[ -n "$selected" ]] || return 1
+  [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#containers[@]})) || { error '无效选项。'; return 1; }
+  SELECTED_DOCKER_CONTAINER="${containers[$((selected - 1))]}"
+}
+
+disconnect_service_network() {
+  local container selected network index
+  local -a networks=()
+  select_docker_container || return 0
+  container="$SELECTED_DOCKER_CONTAINER"
+  mapfile -t networks < <(docker_container_network_names "$container")
+  ((${#networks[@]} > 0)) || { warn "服务 ${container} 当前没有可断开的 Docker bridge 网络（可能使用 host/none 网络模式）。"; return 0; }
+
+  printf '\n服务 %s 当前连接的 Docker 网络：\n' "$container"
   for index in "${!networks[@]}"; do
     printf '  %d. %s\n' "$((index + 1))" "${networks[$index]}"
   done
-  read -r -p "选择要断开的网络 [1-${#networks[@]}，回车取消]：" selected || return 0
-  [[ -z "$selected" ]] && return 0
+  read -r -p "选择要移除的网络 [1-${#networks[@]}，回车取消]：" selected || return 0
+  [[ -n "$selected" ]] || return 0
   [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#networks[@]})) || { error '无效选项。'; return 1; }
   network="${networks[$((selected - 1))]}"
   if ((${#networks[@]} == 1)); then
-    warn '这是 NPM 当前唯一的 Docker 网络；断开后容器将无法通过 bridge 网络通信。'
+    warn "这是服务 ${container} 当前唯一的 Docker 网络；移除后它将失去 bridge 网络通信能力。"
   fi
-  confirm_action "确认断开 NPM 与网络 ${network} 的连接？" || { info '已取消。'; return 0; }
-  if docker network disconnect "$network" nginx-proxy-manager; then
-    success "已断开 NPM 与网络 ${network} 的连接。"
+  confirm_action "确认将服务 ${container} 从网络 ${network} 移除？" || { info '已取消。'; return 0; }
+  if docker network disconnect "$network" "$container"; then
+    success "已将服务 ${container} 从网络 ${network} 移除。"
+    info '该网络连接由 Docker 即时修改；Compose 重建容器后可能需要重新配置。'
   else
-    error "断开网络 ${network} 失败。"
+    error "无法将服务 ${container} 从网络 ${network} 移除。"
     return 1
   fi
 }
 
-connect_npm_network() {
-  local selected network driver scope attached is_attached index
+connect_service_network() {
+  local container selected network driver scope attached is_attached index
   local -a networks=() attached_networks=()
-  mapfile -t attached_networks < <(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' nginx-proxy-manager 2>/dev/null)
+  select_docker_container || return 0
+  container="$SELECTED_DOCKER_CONTAINER"
+  mapfile -t attached_networks < <(docker_container_network_names "$container")
   while IFS= read -r network; do
     [[ -n "$network" ]] || continue
     is_attached=0
@@ -2451,23 +2472,24 @@ connect_npm_network() {
     ((is_attached == 0)) && networks+=("$network")
   done < <(docker network ls --format '{{.Name}}' 2>/dev/null)
 
-  ((${#networks[@]} > 0)) || { warn '没有可连接的 Docker 网络。'; return 0; }
-  printf '\n可连接的 Docker 网络：\n'
+  ((${#networks[@]} > 0)) || { warn "服务 ${container} 已连接所有可用 Docker 网络。"; return 0; }
+  printf '\n可供服务 %s 加入的 Docker 网络：\n' "$container"
   for index in "${!networks[@]}"; do
     network="${networks[$index]}"
     driver="$(docker network inspect --format '{{.Driver}}' "$network" 2>/dev/null || printf '%s' '未知')"
     scope="$(docker network inspect --format '{{.Scope}}' "$network" 2>/dev/null || printf '%s' '未知')"
     printf '  %d. %s（驱动：%s，范围：%s）\n' "$((index + 1))" "$network" "$driver" "$scope"
   done
-  read -r -p "选择要连接的网络 [1-${#networks[@]}，回车取消]：" selected || return 0
-  [[ -z "$selected" ]] && return 0
+  read -r -p "选择要加入的网络 [1-${#networks[@]}，回车取消]：" selected || return 0
+  [[ -n "$selected" ]] || return 0
   [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#networks[@]})) || { error '无效选项。'; return 1; }
   network="${networks[$((selected - 1))]}"
-  confirm_action "确认将 NPM 连接到网络 ${network}？" || { info '已取消。'; return 0; }
-  if docker network connect "$network" nginx-proxy-manager; then
-    success "NPM 已连接到网络 ${network}。"
+  confirm_action "确认将服务 ${container} 加入网络 ${network}？" || { info '已取消。'; return 0; }
+  if docker network connect "$network" "$container"; then
+    success "已将服务 ${container} 加入网络 ${network}。"
+    info '该网络连接由 Docker 即时修改；Compose 重建容器后可能需要重新配置。'
   else
-    error "连接网络 ${network} 失败。"
+    error "无法将服务 ${container} 加入网络 ${network}。"
     return 1
   fi
 }
@@ -2479,15 +2501,15 @@ gateway_settings_menu() {
   while true; do
     printf '\n%s网关设置%s\n' "$BOLD" "$RESET"
     printf '  1. 查看当前网关与网络\n'
-    printf '  2. 断开 NPM 网络（移除对应网关）\n'
-    printf '  3. 连接已有 Docker 网络（新增网关）\n'
+    printf '  2. 从 Docker 网络移除服务\n'
+    printf '  3. 将服务加入 Docker 网络\n'
     printf '  4. 本机 TCP 服务监听地址\n'
     printf '  0. 返回\n'
     read -r -p '请选择 [0-4]：' choice || return 0
     case "$choice" in
       1) show_gateway_networks; pause_menu ;;
-      2) disconnect_npm_network; pause_menu ;;
-      3) connect_npm_network; pause_menu ;;
+      2) disconnect_service_network; pause_menu ;;
+      3) connect_service_network; pause_menu ;;
       4) show_all_local_listeners; pause_menu ;;
       0) return 0 ;;
       *) error '无效选项。'; pause_menu ;;
@@ -2637,7 +2659,7 @@ draw_menu() {
   printf '  7. 查看 NPM 容器日志\n'
   printf '  8. 查看 NPM 端口监听与 Docker 映射\n'
   printf '  9. 本机服务端口监听助手\n'
-  printf ' 10. 网关设置（查看、连接或断开 Docker 网络）\n'
+  printf ' 10. 网关设置（查看与管理容器网络连接）\n'
   printf ' 11. 备份 NPM 数据与证书\n'
   printf ' 12. 卸载 NPM、Docker 或 NPMCtl\n'
   printf '  0. 退出\n'
