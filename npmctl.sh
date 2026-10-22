@@ -405,6 +405,29 @@ show_gateway_networks() {
   printf '\n网关地址由 Docker 网络决定；本菜单通过连接或断开网络来修改 NPM 的网络设置。\n'
 }
 
+show_all_gateway_services() {
+  local network_id network_name driver gateway containers
+  local found=0
+  printf '\n%sDocker 网关与容器服务%s\n' "$BOLD" "$RESET"
+  while IFS= read -r network_id; do
+    [[ -n "$network_id" ]] || continue
+    found=1
+    network_name="$(docker network inspect --format '{{.Name}}' "$network_id" 2>/dev/null || true)"
+    driver="$(docker network inspect --format '{{.Driver}}' "$network_id" 2>/dev/null || true)"
+    gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$network_id" 2>/dev/null || true)"
+    containers="$(docker network inspect --format '{{range $id, $container := .Containers}}{{$container.Name}} ({{$container.IPv4Address}}); {{end}}' "$network_id" 2>/dev/null || true)"
+    printf '\n网络：%s\n' "${network_name:-未知}"
+    printf '驱动：%s\n' "${driver:-未知}"
+    printf '网关：%s\n' "${gateway:--}"
+    if [[ -n "$containers" ]]; then
+      printf '容器服务：%s\n' "$containers"
+    else
+      printf '容器服务：无\n'
+    fi
+  done < <(docker network ls -q 2>/dev/null)
+  ((found == 1)) || warn '未找到 Docker 网络。'
+}
+
 disconnect_npm_network() {
   local selected network index
   local -a networks=()
@@ -474,12 +497,14 @@ gateway_settings_menu() {
     printf '  1. 查看当前网关与网络\n'
     printf '  2. 断开 NPM 网络（移除对应网关）\n'
     printf '  3. 连接已有 Docker 网络（新增网关）\n'
+    printf '  4. 查询所有网关及其容器服务\n'
     printf '  0. 返回\n'
-    read -r -p '请选择 [0-3]：' choice || return 0
+    read -r -p '请选择 [0-4]：' choice || return 0
     case "$choice" in
       1) show_gateway_networks; pause_menu ;;
       2) disconnect_npm_network; pause_menu ;;
       3) connect_npm_network; pause_menu ;;
+      4) show_all_gateway_services; pause_menu ;;
       0) return 0 ;;
       *) error '无效选项。'; pause_menu ;;
     esac
