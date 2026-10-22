@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.2.1"
+readonly MANAGER_VERSION="1.3.0"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -382,6 +382,195 @@ show_listeners() {
       printf '%s\t%s\t%s\n' "$name" "$(localize_container_state "$state")" "$ports"
     done < <(docker ps --format '{{.Names}}\t{{.State}}\t{{.Ports}}' 2>/dev/null)
   fi
+}
+
+listener_host_from_address() {
+  local address="$1"
+  case "$address" in
+    \[*\]:*) address="${address#\[}"; printf '%s\n' "${address%%\]:*}" ;;
+    *:*) printf '%s\n' "${address%:*}" ;;
+    *) printf '%s\n' "$address" ;;
+  esac
+}
+
+listener_port_from_address() {
+  local address="$1"
+  printf '%s\n' "${address##*:}"
+}
+
+listener_scope() {
+  local host="$1"
+  case "$host" in
+    127.*|localhost|::1) printf '仅本机回环' ;;
+    0.0.0.0|\*|::|\[::\]) printf '所有网卡' ;;
+    *) printf '指定网卡' ;;
+  esac
+}
+
+listener_process_name() {
+  local line="$1" process
+  process="$(sed -n 's/.*users:(("\([^"]*\)".*/\1/p' <<< "$line")"
+  printf '%s\n' "${process:--}"
+}
+
+listener_process_pid() {
+  local line="$1" pid
+  pid="$(sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' <<< "$line" | head -n 1)"
+  printf '%s\n' "${pid:--}"
+}
+
+listener_systemd_unit() {
+  local pid="$1" unit
+  [[ "$pid" =~ ^[0-9]+$ ]] || { printf '%s\n' '-'; return; }
+  [[ -r "/proc/${pid}/cgroup" ]] || { printf '%s\n' '-'; return; }
+  unit="$(sed -n 's|.*/\([^/]*\.service\).*|\1|p' "/proc/${pid}/cgroup" | head -n 1)"
+  printf '%s\n' "${unit:--}"
+}
+
+show_listener_record() {
+  local line="$1" address host port process pid unit
+  address="$(awk '{print $4}' <<< "$line")"
+  [[ -n "$address" ]] || return 0
+  host="$(listener_host_from_address "$address")"
+  port="$(listener_port_from_address "$address")"
+  process="$(listener_process_name "$line")"
+  pid="$(listener_process_pid "$line")"
+  unit="$(listener_systemd_unit "$pid")"
+  printf '监听：%s | 端口：%s | 范围：%s\n' "$host" "$port" "$(listener_scope "$host")"
+  printf '进程：%s | PID：%s | systemd：%s\n' "$process" "$pid" "$unit"
+}
+
+show_all_local_tcp_listeners() {
+  local line found=0
+  printf '\n%s本机 TCP 监听列表%s\n' "$BOLD" "$RESET"
+  info '仅本机回环通常只能由宿主机或 host 网络容器访问；所有网卡监听可被 Docker bridge 通过宿主机网关访问。'
+  if command -v ss >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      found=1
+      show_listener_record "$line"
+      printf '\n'
+    done < <(ss -ltnpH 2>/dev/null)
+  elif command -v netstat >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      found=1
+      printf '%s\n' "$line"
+    done < <(netstat -ltnp 2>/dev/null | tail -n +3)
+  else
+    error '未找到 ss 或 netstat，无法查看本机 TCP 监听。'
+    return 1
+  fi
+  (( found == 1 )) || warn '未发现本机 TCP 监听服务。'
+}
+
+show_local_tcp_port() {
+  local port listener line found=0 host scope mode
+  read -r -p '请输入要检查的 TCP 端口（1-65535）：' port || return 0
+  [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || { error '端口必须是 1-65535 之间的整数。'; return 1; }
+  printf '\n%s端口 %s 监听检查%s\n' "$BOLD" "$port" "$RESET"
+  if command -v ss >/dev/null 2>&1; then
+    listener="$(ss -ltnpH "sport = :$port" 2>/dev/null || true)"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      found=1
+      show_listener_record "$line"
+    done <<< "$listener"
+  elif command -v netstat >/dev/null 2>&1; then
+    listener="$(netstat -ltnp 2>/dev/null | awk -v port=":$port" '$4 ~ (port "$")' || true)"
+    [[ -n "$listener" ]] && { found=1; printf '%s\n' "$listener"; }
+  else
+    error '未找到 ss 或 netstat，无法查看本机 TCP 监听。'
+    return 1
+  fi
+  if (( found == 0 )); then
+    warn "未发现 TCP 端口 ${port} 处于监听状态。"
+  fi
+  show_docker_mapping_for_host_port "$port"
+  mode="$(current_network_mode)"
+  printf '\nNPM 访问建议：\n'
+  if [[ "$mode" == host ]]; then
+    info "当前 NPM 使用宿主机网络（host），可尝试 127.0.0.1:${port}。"
+  else
+    scope=''
+    if [[ -n "$listener" ]]; then
+      host="$(listener_host_from_address "$(awk 'NR==1{print $4}' <<< "$listener")")"
+      scope="$(listener_scope "$host")"
+    fi
+    case "$scope" in
+      仅本机回环) warn "当前服务仅监听 127.0.0.1，bridge 模式的 NPM 通常无法直接访问；建议切换 host、修改监听地址，或通过宿主机发布端口访问。" ;;
+      *) info "当前 NPM 使用桥接网络（bridge）；可使用 NPM 所在网络的宿主机网关:端口，或使用同一 Docker 网络中的服务名:容器端口。" ;;
+    esac
+  fi
+}
+
+show_docker_mapping_for_host_port() {
+  local host_port="$1" name ports found=0
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  while IFS=$'\t' read -r name ports; do
+    [[ -n "$name" ]] || continue
+    if grep -Eq "(:|[[:space:]])${host_port}->" <<< "$ports"; then
+      ((found += 1))
+      printf 'Docker 端口映射：%s → %s\n' "$name" "$ports"
+    fi
+  done < <(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null)
+  (( found == 0 )) && info "未发现 Docker 容器发布宿主机端口 ${host_port}。"
+}
+
+show_docker_published_ports() {
+  local name state ports found=0
+  require_docker || return 1
+  printf '\n%sDocker 容器发布到宿主机的端口%s\n' "$BOLD" "$RESET"
+  printf '%-32s %-12s %s\n' '容器名称' '状态' '端口映射'
+  while IFS=$'\t' read -r name state ports; do
+    found=1
+    printf '%-32s %-12s %s\n' "$name" "$(localize_container_state "$state")" "${ports:--}"
+  done < <(docker ps --format '{{.Names}}\t{{.State}}\t{{.Ports}}' 2>/dev/null)
+  (( found == 1 )) || warn '当前没有运行中的 Docker 容器。'
+}
+
+show_npm_listener_guidance() {
+  local mode gateways
+  mode="$(current_network_mode)"
+  printf '\n%sNPM 本机服务访问建议%s\n' "$BOLD" "$RESET"
+  if [[ "$mode" == host ]]; then
+    cat <<'GUIDE'
+当前模式：宿主机网络（host）
+  - 原生服务监听 127.0.0.1:端口：NPM 上游填写 127.0.0.1:端口。
+  - 服务监听 0.0.0.0 或宿主机网卡：可填写宿主机地址:端口。
+GUIDE
+  else
+    gateways="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' nginx-proxy-manager 2>/dev/null | awk 'NF' | sort -u | paste -sd ', ' -)"
+    cat <<GUIDE
+当前模式：桥接网络（bridge）
+  - 原生服务仅监听 127.0.0.1：NPM 容器通常无法直接访问，请切换 host 或调整监听地址。
+  - 已发布到宿主机的容器端口：可尝试 NPM 所在网络的宿主机网关:宿主机端口。
+  - 同一 Docker 网络中的容器：优先使用服务名:容器端口。
+  - NPM 当前网络的宿主机网关：${gateways:--（NPM 尚未部署或未连接 bridge 网络）}
+GUIDE
+  fi
+}
+
+local_service_listener_assistant() {
+  local choice
+  while true; do
+    printf '\n%s本机服务端口监听助手%s\n' "$BOLD" "$RESET"
+    printf '  1. 查看全部本机 TCP 监听\n'
+    printf '  2. 检查指定端口及 NPM 访问方式\n'
+    printf '  3. 查看 Docker 容器端口映射\n'
+    printf '  4. 查看 NPM 访问本机服务建议\n'
+    printf '  0. 返回\n'
+    read -r -p '请选择 [0-4]：' choice || return 0
+    case "$choice" in
+      1) show_all_local_tcp_listeners; pause_menu ;;
+      2) show_local_tcp_port; pause_menu ;;
+      3) show_docker_published_ports; pause_menu ;;
+      4) show_npm_listener_guidance; pause_menu ;;
+      0) return 0 ;;
+      *) error '无效选项。'; pause_menu ;;
+    esac
+  done
 }
 
 show_gateway_networks() {
@@ -761,9 +950,10 @@ draw_menu() {
   printf '  6. 查看后端连接建议\n'
   printf '  7. 查看 NPM 容器日志\n'
   printf '  8. 查看 NPM 端口监听与 Docker 映射\n'
-  printf '  9. 网关设置（查看、连接或断开 Docker 网络）\n'
-  printf ' 10. 备份 NPM 数据与证书\n'
-  printf ' 11. 卸载 NPM、Docker 或 NPMCtl\n'
+  printf '  9. 本机服务端口监听助手\n'
+  printf ' 10. 网关设置（查看、连接或断开 Docker 网络）\n'
+  printf ' 11. 备份 NPM 数据与证书\n'
+  printf ' 12. 卸载 NPM、Docker 或 NPMCtl\n'
   printf '  0. 退出\n'
   printf '%s============================================%s\n' "$BLUE" "$RESET"
   printf '提示：退出后可在终端输入 npmctl 再次打开本菜单。\n'
@@ -773,7 +963,7 @@ main_menu() {
   local choice
   while true; do
     draw_menu
-    read -r -p '请选择 [0-11]：' choice || exit 0
+    read -r -p '请选择 [0-12]：' choice || exit 0
     printf '\n'
     case "$choice" in
       1) update_manager; pause_menu ;;
@@ -784,9 +974,10 @@ main_menu() {
       6) show_backend_guidance; pause_menu ;;
       7) show_logs; pause_menu ;;
       8) show_listeners; pause_menu ;;
-      9) gateway_settings_menu; pause_menu ;;
-      10) backup_data; pause_menu ;;
-      11) uninstall_menu; pause_menu ;;
+      9) local_service_listener_assistant; pause_menu ;;
+      10) gateway_settings_menu; pause_menu ;;
+      11) backup_data; pause_menu ;;
+      12) uninstall_menu; pause_menu ;;
       0) exit 0 ;;
       *) warn '无效选项。'; pause_menu ;;
     esac
