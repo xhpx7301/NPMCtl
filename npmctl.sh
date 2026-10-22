@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.4.0"
+readonly MANAGER_VERSION="1.4.1"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -710,6 +710,23 @@ docker_gateway_targets_for_container() {
   done < <(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}}|{{$network.Gateway}}{{println}}{{end}}' "$container_reference" 2>/dev/null)
 }
 
+docker_npm_compatibility_targets() {
+  local container_reference="$1"
+  local container_id container_name attached_targets default_bridge_gateway
+
+  IFS='|' read -r container_id container_name < <(docker inspect --format '{{.Id}}|{{.Name}}' "$container_reference" 2>/dev/null)
+  [[ -n "$container_id" && -n "$container_name" ]] || return 0
+  container_name="${container_name#/}"
+  attached_targets="$(docker_gateway_targets_for_container "$container_id")"
+  [[ -z "$attached_targets" ]] || printf '%s\n' "$attached_targets"
+
+  default_bridge_gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' bridge 2>/dev/null || true)"
+  is_valid_ipv4 "$default_bridge_gateway" || return 0
+  if ! awk -F '\t' '$3 == "bridge" { found = 1 } END { exit !found }' <<< "$attached_targets"; then
+    printf '%s\t%s\t%s\t%s\n' "$container_id" "$container_name" 'bridge（Docker系统默认）' "$default_bridge_gateway"
+  fi
+}
+
 show_running_docker_containers() {
   command -v docker >/dev/null 2>&1 || return 0
   docker info >/dev/null 2>&1 || return 0
@@ -815,7 +832,7 @@ find_npm_gateway_targets() {
 
   while IFS='|' read -r container_id image container_name; do
     is_npm_container "$image" "$container_name" || continue
-    docker_gateway_targets_for_container "$container_id"
+    docker_npm_compatibility_targets "$container_id"
   done < <(docker ps --format '{{.ID}}|{{.Image}}|{{.Names}}' 2>/dev/null)
 }
 
@@ -2006,7 +2023,11 @@ show_docker_mapping_plan() {
   compat_gateway_display="<选择后确定>"
   if (( ${#compat_targets[@]} == 1 )); then
     IFS=$'\t' read -r compat_container_id compat_container_name compat_network compat_gateway <<< "${compat_targets[0]}"
-    compat_gateway_display="$compat_gateway"
+    if [[ "$compat_network" == bridge* ]]; then
+      compat_gateway_display="$compat_gateway（Docker 系统默认 bridge）"
+    else
+      compat_gateway_display="$compat_gateway"
+    fi
   elif (( ${#compat_targets[@]} > 1 )); then
     compat_target="$(preferred_npm_gateway_target "${compat_targets[@]}")"
     IFS=$'\t' read -r compat_container_id compat_container_name compat_network compat_gateway <<< "$compat_target"
@@ -2023,7 +2044,7 @@ show_docker_mapping_plan() {
     "$container_name" "${current_host_ip:-0.0.0.0}" "$host_port" "$container_port"
   info "选项 1 只配置共享网络并保留当前 ports；选项 2-4 才会修改端口发布地址。"
   printf '  1. [推荐] 配置 NPM 与应用共享网络（不修改当前端口映射）\n'
-  printf '  2. [兼容] NPM 经 Docker bridge 网关中转：%s:%s:%s（仅发布到该网关）\n' "$compat_gateway_display" "$host_port" "$internal_port"
+  printf '  2. [兼容] NPM 经 Docker bridge 网关中转（含系统默认 bridge）：%s:%s:%s（仅发布到该网关）\n' "$compat_gateway_display" "$host_port" "$internal_port"
   printf '  3. [宿主机 NPM] 仅发布到本机：127.0.0.1:%s:%s\n' "$host_port" "$internal_port"
   printf '  4. [公网] 任何来源可访问：0.0.0.0:%s:%s\n' "$host_port" "$internal_port"
   printf '  0. 返回\n'
@@ -2040,7 +2061,7 @@ show_docker_mapping_plan() {
         show_running_docker_containers
         read -r -p "输入 NPM 容器名称或 ID（直接回车返回）: " manual_container
         [[ -n "$manual_container" ]] || return 0
-        mapfile -t compat_targets < <(docker_gateway_targets_for_container "$manual_container")
+        mapfile -t compat_targets < <(docker_npm_compatibility_targets "$manual_container")
       fi
       if (( ${#compat_targets[@]} == 0 )); then
         error "未找到 NPM 容器的 IPv4 Docker bridge 网关，无法生成兼容映射。"
@@ -2057,9 +2078,17 @@ show_docker_mapping_plan() {
           IFS=$'\t' read -r compat_container_id compat_container_name compat_network compat_gateway <<< "${compat_targets[$i]}"
           if [[ "$compat_targets[$i]" == "$compat_target" ]]; then
             preferred_index=$((i + 1))
+          if [[ "$compat_network" == bridge* ]]; then
+            printf '  %d. 容器 %s，Docker 系统默认 bridge 网络，网关 %s [推荐]\n' "$((i + 1))" "$compat_container_name" "$compat_gateway"
+          else
             printf '  %d. 容器 %s，网络 %s，网关 %s [推荐]\n' "$((i + 1))" "$compat_container_name" "$compat_network" "$compat_gateway"
+          fi
+          else
+          if [[ "$compat_network" == bridge* ]]; then
+            printf '  %d. 容器 %s，Docker 系统默认 bridge 网络，网关 %s\n' "$((i + 1))" "$compat_container_name" "$compat_gateway"
           else
             printf '  %d. 容器 %s，网络 %s，网关 %s\n' "$((i + 1))" "$compat_container_name" "$compat_network" "$compat_gateway"
+          fi
           fi
         done
         read -r -p "请选择 [1-${#compat_targets[@]}，默认 ${preferred_index}]: " selection
@@ -2076,7 +2105,12 @@ show_docker_mapping_plan() {
         return 1
       fi
       bind_host="$compat_gateway"
-      info "检测到 NPM 容器 ${compat_container_name} 的 Docker 网关：${compat_gateway}（网络 ${compat_network}）。"
+      if [[ "$compat_network" == bridge* ]]; then
+        info "已选择 Docker 系统默认 bridge 网络网关：${compat_gateway}（NPM 容器：${compat_container_name}）。"
+        warn "请确认 NPM 容器能够访问此网关；若不可达，请改选 NPM 已连接的 Docker 网络网关。"
+      else
+        info "检测到 NPM 容器 ${compat_container_name} 的 Docker 网关：${compat_gateway}（网络 ${compat_network}）。"
+      fi
       info "Compose 目标映射：${compat_gateway}:${host_port}:${internal_port}。"
       info "重建后在 NPM 中填写上游地址 ${compat_gateway}:${host_port}。"
       ;;
