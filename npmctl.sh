@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.2.0"
+readonly MANAGER_VERSION="1.2.1"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -385,22 +385,30 @@ show_listeners() {
 }
 
 show_gateway_networks() {
-  local rows name gateway ip members member member_ip
+  local rows name gateway ip members member member_ip driver project default_network role
   if ! docker inspect nginx-proxy-manager >/dev/null 2>&1; then
     error 'NPM 容器不存在，无法读取网关设置。'
     return 1
   fi
 
   printf '\n%sNPM 网关与网络连接%s\n' "$BOLD" "$RESET"
-  printf '%-4s %-46s %-16s %-16s\n' '序号' 'Docker 网络' '网关' '容器 IP'
-  printf '%-4s %-46s %-16s %-16s\n' '----' '----------------------------------------------' '----------------' '----------------'
+  project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' nginx-proxy-manager 2>/dev/null || true)"
+  default_network="${project:-npmctl}_default"
+  printf 'NPM 当前加入的 Docker 网络：\n'
   rows="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}}|{{$network.Gateway}}|{{$network.IPAddress}}{{"\n"}}{{end}}' nginx-proxy-manager 2>/dev/null || true)"
-  [[ -n "$rows" ]] || { warn 'NPM 当前没有连接到任何 Docker bridge 网络（可能是 host 网络模式）。'; return 0; }
+  if [[ -z "$rows" ]]; then
+    warn 'NPM 当前没有连接到任何 Docker bridge 网络（可能是 host 网络模式）。'
+  fi
   local index=0
   while IFS='|' read -r name gateway ip; do
     [[ -n "$name" ]] || continue
     ((index += 1))
-    printf '%-4s %-46s %-16s %-16s\n' "$index" "$name" "${gateway:--}" "${ip:--}"
+    driver="$(docker network inspect --format '{{.Driver}}' "$name" 2>/dev/null || printf '未知')"
+    role='附加网络'
+    [[ "$name" == "$default_network" || "$name" == 'npmctl_default' ]] && role='NPM 默认 Compose bridge 网络'
+    printf '  %d. %s\n' "$index" "$name"
+    printf '     类型：%s | 用途：%s\n' "$driver" "$role"
+    printf '     网关：%s | NPM 容器 IP：%s\n' "${gateway:--}" "${ip:--}"
     members="$(docker network inspect --format '{{range $id, $container := .Containers}}{{$container.Name}}|{{$container.IPv4Address}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)"
     if [[ -n "$members" ]]; then
       printf '     同网络容器：\n'
@@ -416,8 +424,33 @@ show_gateway_networks() {
       printf '     同网络容器：无\n'
     fi
   done <<< "$rows"
+  show_docker_default_bridge_network
   printf '\n网关地址由 Docker 网络决定；同网络容器可直接使用容器名和容器端口互相访问。\n'
   printf '本菜单也可以连接或断开 NPM 的 Docker 网络；Compose 重建后如需保留额外网络，应在 Compose 中声明。\n'
+}
+
+show_docker_default_bridge_network() {
+  local gateway members member member_ip npm_member=0
+  docker network inspect bridge >/dev/null 2>&1 || return 0
+  gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' bridge 2>/dev/null || true)"
+  members="$(docker network inspect --format '{{range $id, $container := .Containers}}{{$container.Name}}|{{$container.IPv4Address}}{{"\n"}}{{end}}' bridge 2>/dev/null || true)"
+  printf '\nDocker 系统默认 bridge 网络：\n'
+  printf '  网络：bridge | 驱动：bridge | 网关：%s\n' "${gateway:--}"
+  if [[ -n "$members" ]]; then
+    printf '  网络成员：\n'
+    while IFS='|' read -r member member_ip; do
+      [[ -n "$member" ]] || continue
+      [[ "$member" == 'nginx-proxy-manager' ]] && npm_member=1
+      printf '    - %s（IP %s）\n' "$member" "${member_ip:--}"
+    done <<< "$members"
+  else
+    printf '  网络成员：无\n'
+  fi
+  if (( npm_member == 1 )); then
+    printf '  NPM 状态：已加入 Docker 系统默认 bridge 网络。\n'
+  else
+    printf '  NPM 状态：未加入；NPM 当前使用自己的 Compose 默认网络或 host 网络。\n'
+  fi
 }
 
 show_all_gateway_services() {
