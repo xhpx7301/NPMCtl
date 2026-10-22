@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.4.3"
+readonly MANAGER_VERSION="1.4.4"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -2651,15 +2651,15 @@ draw_menu() {
   status_line
   printf '%s--------------------------------------------%s\n' "$BLUE" "$RESET"
   printf '  1. 更新 NPMCtl 管理菜单\n'
-  printf '  2. 查看运行状态与 Compose 配置\n'
-  printf '  3. 安装 Docker 与 Compose\n'
-  printf '  4. 部署或更新 Nginx Proxy Manager\n'
-  printf '  5. 切换网络模式（桥接网络 / 宿主机网络）\n'
-  printf '  6. 查看后端连接建议\n'
-  printf '  7. 查看 NPM 容器日志\n'
-  printf '  8. 查看 NPM 端口监听与 Docker 映射\n'
-  printf '  9. 本机服务端口监听助手\n'
-  printf ' 10. 网关设置（查看与管理容器网络连接）\n'
+  printf '  2. 本机服务端口监听助手\n'
+  printf '  3. 网关设置（查看、连接或断开 Docker 网络）\n'
+  printf '  4. 安装 Docker 与 Compose\n'
+  printf '  5. 部署或更新 Nginx Proxy Manager\n'
+  printf '  6. 切换网络模式（桥接网络 / 宿主机网络）\n'
+  printf '  7. 查看运行状态与 Compose 配置\n'
+  printf '  8. 查看后端连接建议\n'
+  printf '  9. 查看 NPM 容器日志\n'
+  printf ' 10. 查看 NPM 端口监听与 Docker 映射\n'
   printf ' 11. 备份 NPM 数据与证书\n'
   printf ' 12. 卸载 NPM、Docker 或 NPMCtl\n'
   printf '  0. 退出\n'
@@ -2675,15 +2675,15 @@ main_menu() {
     printf '\n'
     case "$choice" in
       1) update_manager; pause_menu ;;
-      2) show_status; pause_menu ;;
-      3) install_docker; pause_menu ;;
-      4) deploy_npm "$(current_network_mode)"; pause_menu ;;
-      5) switch_network_mode; pause_menu ;;
-      6) show_backend_guidance; pause_menu ;;
-      7) show_logs; pause_menu ;;
-      8) show_listeners; pause_menu ;;
-      9) local_service_listener_assistant; pause_menu ;;
-      10) gateway_settings_menu; pause_menu ;;
+      2) local_service_listener_assistant; pause_menu ;;
+      3) gateway_settings_menu; pause_menu ;;
+      4) install_docker; pause_menu ;;
+      5) deploy_npm "$(current_network_mode)"; pause_menu ;;
+      6) switch_network_mode; pause_menu ;;
+      7) show_status; pause_menu ;;
+      8) show_backend_guidance; pause_menu ;;
+      9) show_logs; pause_menu ;;
+      10) show_listeners; pause_menu ;;
       11) backup_data; pause_menu ;;
       12) uninstall_menu; pause_menu ;;
       0) exit 0 ;;
