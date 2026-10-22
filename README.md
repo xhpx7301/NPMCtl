@@ -9,7 +9,7 @@
 | Docker 部署 | 使用 `jc21/nginx-proxy-manager:latest` 创建 Nginx Proxy Manager。默认采用官方 bridge 网络、SQLite 数据库与 80、81、443 端口映射。 |
 | 网络模式切换 | 可在默认 `bridge` 与 Linux `network_mode: host` 之间切换，并在更改前备份 Compose 配置。 |
 | 网关设置 | 查看 Docker 网络、网关、容器服务和服务网络中转路径，并连接或断开已有 Docker 网络。 |
-| 本机服务监听助手 | 扫描宿主机 TCP 监听、识别监听范围和进程，查看 Docker 端口发布，并根据 bridge/host 模式给出 NPM 反代建议。 |
+| 本机服务监听助手 | 迁移自 CaddyCtl 的完整监听助手：扫描宿主机 TCP 监听、识别监听范围/进程/PID/systemd，关联 Docker 发布端口与容器内部监听，检测 NPM 网关连通性，并支持 Kopia 接管、systemd 服务详情、监听地址备份修改、自动恢复和上一次回滚。 |
 | 原生后端支持 | host 模式下，NPM 可直接代理监听在宿主机 `127.0.0.1` 的服务。 |
 | 日常维护 | 查看容器状态、日志、端口监听，更新管理脚本，以及备份 NPM 的 SQLite 数据和 Let's Encrypt 证书。 |
 | 配置保护 | 切换网络模式会备份旧 Compose 和 NPMCtl 配置；卸载容器默认保留 NPM 数据，完全卸载需确认。 |
@@ -75,7 +75,7 @@ export NPMCTL_SOURCE_URL="https://<HOST>/<PATH>/npmctl.sh"
 
 ### 本机服务端口监听助手
 
-主菜单的“本机服务端口监听助手”提供四项诊断：扫描全部本机 TCP 监听、检查指定端口及 NPM 访问方式、查看 Docker 容器发布到宿主机的端口，以及显示当前 bridge/host 网络模式下的反代建议。监听范围会标记为“仅本机回环”“所有网卡”或“指定网卡”，并尽量显示进程名和 PID。助手只读取系统状态，不会自动修改原生服务的监听配置；原生服务仅监听 `127.0.0.1` 时，bridge 模式通常无法直接访问，host 模式可使用 `127.0.0.1:端口`。
+主菜单的“本机服务端口监听助手”已完整迁移 CaddyCtl 的相关能力：显示本机 TCP 监听表（包含监听范围、进程/PID、systemd 服务、Docker 发布端口与对应容器实际端口），查看全部运行中容器的内部监听，识别 NPM 容器及 Docker 网关，验证 NPM 到宿主机服务的连通性，并提供 Docker 容器端口映射、共享网络和 bridge 网关中转建议。对于 systemd 管理的原生服务，助手可以查看服务定义和配置文件，自动备份并替换监听地址，重启后验证，失败时自动恢复；同时保留上一次修改的手动回滚入口。Kopia `server start` 进程支持专用监听地址修改；脱离 systemd 的 Kopia 进程还可以保留原参数接管为 NPMCtl 管理的 systemd 服务。监听地址修改会影响服务可达范围，请先确认防火墙和访问来源。
 
 ## 文件位置
 
