@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.5.2"
+readonly MANAGER_VERSION="1.5.3"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -1354,7 +1354,7 @@ socket.on("error", () => process.exit(1));'
 
   printf '\n%sNPM 容器连通性验证%s\n' "$BOLD" "$RESET"
   if docker exec "$container_id" node -e "$node_check" "$gateway" "$port" >/dev/null 2>&1; then
-    success "NPM 容器 ${container_name} 可连接 Kopia：${gateway}:${port}。"
+    success "NPM 容器 ${container_name} 可连接宿主机服务：${gateway}:${port}。"
     info "请在 Nginx Proxy Manager 中将“转发主机名/IP”设为 ${gateway}，端口设为 ${port}，协议使用 http。"
     return 0
   fi
@@ -1773,6 +1773,100 @@ generic_listener_is_listening_on() {
     grep -Eq "(0\\.0\\.0\\.0|\\*):${port}([^0-9]|$)" <<< "$listener"
   else
     grep -Fq -- "${bind_host}:${port}" <<< "$listener"
+  fi
+}
+
+xui_listener_ip() {
+  local xui_binary="$1"
+
+  "$xui_binary" setting -getListen 2>/dev/null \
+    | sed -n 's/^listenIP:[[:space:]]*//p' | head -n 1
+}
+
+wait_for_xui_listener() {
+  local port="$1"
+  local bind_host="$2"
+  local attempt
+
+  for ((attempt = 0; attempt < 15; attempt++)); do
+    if systemctl is-active --quiet x-ui.service \
+        && generic_listener_is_listening_on "$port" "$bind_host"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+apply_xui_listener_address() {
+  local port="$1"
+  local xui_binary="$2"
+  local bind_host="$3"
+  local old_address
+
+  [[ "$xui_binary" == */x-ui && -x "$xui_binary" ]] || {
+    error "无法确认 3X-UI CLI 程序路径，已取消修改。"
+    return 1
+  }
+  if [[ "$bind_host" != "0.0.0.0" ]] && ! is_valid_ipv4 "$bind_host"; then
+    error "3X-UI 监听地址必须是有效 IPv4 地址。"
+    return 1
+  fi
+  old_address="$(xui_listener_ip "$xui_binary")"
+  if [[ -z "$old_address" ]] || { [[ "$old_address" != "0.0.0.0" ]] && ! is_valid_ipv4 "$old_address"; }; then
+    error "无法从 3X-UI CLI 读取有效的当前 IPv4 监听地址，已取消修改。"
+    return 1
+  fi
+  if [[ "$old_address" == "$bind_host" ]]; then
+    info "3X-UI 已监听 ${bind_host}:${port}，无需修改。"
+    return 0
+  fi
+
+  if ! "$xui_binary" setting -listenIP "$bind_host"; then
+    error "3X-UI CLI 修改监听地址失败。"
+    return 1
+  fi
+  if systemctl restart x-ui.service && wait_for_xui_listener "$port" "$bind_host"; then
+    success "3X-UI 已监听 ${bind_host}:${port}。"
+    show_local_listener "$port"
+    return 0
+  fi
+
+  error "3X-UI 重启或监听验证失败，正在恢复原监听地址 ${old_address}。"
+  "$xui_binary" setting -listenIP "$old_address" >/dev/null 2>&1 || true
+  systemctl restart x-ui.service >/dev/null 2>&1 || true
+  wait_for_xui_listener "$port" "$old_address" || true
+  return 1
+}
+
+manage_xui_systemd_listener() {
+  local port="$1"
+  local listener="$2"
+  local unit="$3"
+  local pid xui_binary current_ip
+
+  pid="$(printf '%s\n' "$listener" | listener_pid_from_details)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || { error "无法识别 x-ui 进程 PID。"; return 1; }
+  xui_binary="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+  if [[ "$unit" != "x-ui.service" || "$(basename -- "$xui_binary")" != "x-ui" || ! -x "$xui_binary" ]]; then
+    error "端口由 x-ui 进程监听，但无法确认其属于标准 x-ui.service，已跳过专用修改。"
+    return 1
+  fi
+  current_ip="$(xui_listener_ip "$xui_binary")"
+  if [[ -z "$current_ip" ]]; then
+    error "无法通过 3X-UI CLI 读取当前监听地址。"
+    return 1
+  fi
+
+  printf '\n%s3X-UI 面板监听地址%s\n' "$BOLD" "$RESET"
+  printf '当前监听：%s:%s\n' "$current_ip" "$port"
+  info "使用 3X-UI 自带 CLI 修改数据库中的监听设置，不直接改写数据库文件。"
+  prompt_generic_systemd_bind_host "$port" || return 0
+  warn "将把 3X-UI 面板监听改为 ${GENERIC_BIND_HOST}:${port}，并重启 x-ui.service。"
+  confirm_action "确认继续？" || { info "已取消。"; return 0; }
+  if apply_xui_listener_address "$port" "$xui_binary" "$GENERIC_BIND_HOST" \
+      && [[ -n "$GENERIC_NPM_CONTAINER_ID" ]]; then
+    verify_npm_gateway_connection "$GENERIC_NPM_CONTAINER_ID" "$GENERIC_NPM_CONTAINER_NAME" "$GENERIC_NPM_GATEWAY" "$port" || true
   fi
 }
 
@@ -2683,7 +2777,7 @@ show_native_listener_launch_info() {
 }
 
 local_service_listener_assistant() {
-  local port listener process docker_mapping container_id container_name container_port host_ip
+  local port listener process unit docker_mapping container_id container_name container_port host_ip
 
   while true; do
     printf '\n%s本机服务端口监听助手%s\n' "$BOLD" "$RESET"
@@ -2727,6 +2821,9 @@ local_service_listener_assistant() {
   show_native_listener_launch_info "$listener"
   if [[ "$process" == "kopia" ]]; then
     manage_kopia_listener "$port" "$listener"
+  elif [[ "$process" == "x-ui" ]]; then
+    unit="$(systemd_unit_for_pid "$(printf '%s\n' "$listener" | listener_pid_from_details)")"
+    manage_xui_systemd_listener "$port" "$listener" "$unit"
   else
     unit="$(systemd_unit_for_pid "$(printf '%s\n' "$listener" | listener_pid_from_details)")"
     if [[ -n "$unit" ]]; then
