@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.5.4"
+readonly MANAGER_VERSION="1.5.5"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -571,9 +571,17 @@ l4_apply() {
   return 1
 }
 
+l4_status_label() {
+  if l4_enabled; then
+    printf '%s已启用%s' "$GREEN" "$RESET"
+  else
+    printf '%s未启用%s' "$YELLOW" "$RESET"
+  fi
+}
+
 show_l4_status() {
   local sni host port
-  printf '\n443 端口复用：%s\n' "$(l4_enabled && printf '已启用' || printf '未启用')"
+  printf '\n443 端口复用：%s\n' "$(l4_status_label)"
   printf '网站和 HTTP 面板：在 NPM 中配置 Proxy Hosts 与证书。\n'
   if [[ -s "$L4_ROUTES" ]]; then
     printf '\nReality SNI 映射：\n'
@@ -3254,7 +3262,7 @@ status_line() {
     "${BLUE}$(short_network_mode "$mode")${RESET}"
   printf 'NPMCtl 版本：%s\n' \
     "$MANAGER_VERSION"
-  printf '443 复用：%s\n' "$(l4_enabled && printf '已启用' || printf '未启用')"
+  printf '443 复用：%s\n' "$(l4_status_label)"
 }
 
 docker_runtime_status() {
