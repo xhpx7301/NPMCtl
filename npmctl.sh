@@ -1355,7 +1355,7 @@ socket.on("error", () => process.exit(1));'
   printf '\n%sNPM 容器连通性验证%s\n' "$BOLD" "$RESET"
   if docker exec "$container_id" node -e "$node_check" "$gateway" "$port" >/dev/null 2>&1; then
     success "NPM 容器 ${container_name} 可连接宿主机服务：${gateway}:${port}。"
-    info "请在 Nginx Proxy Manager 中将“转发主机名/IP”设为 ${gateway}，端口设为 ${port}，协议使用 http。"
+    info "请在 Nginx Proxy Manager 中将“转发主机名/IP”设为 ${gateway}，端口设为 ${port}，协议按后端实际 HTTP/HTTPS 设置。"
     return 0
   fi
 
@@ -1776,10 +1776,27 @@ generic_listener_is_listening_on() {
   fi
 }
 
-xui_listener_ip() {
+xui_cli() (
   local xui_binary="$1"
+  shift
 
-  "$xui_binary" setting -getListen 2>/dev/null \
+  # The caller snapshots the running service's environment and directory before
+  # a restart, including custom XUI_DB_FOLDER paths. Never source them as code.
+  if [[ -n "${XUI_SERVICE_WORKDIR:-}" ]]; then
+    cd -- "$XUI_SERVICE_WORKDIR" || return 1
+    env -i "${XUI_SERVICE_ENV[@]}" "$xui_binary" setting "$@"
+  else
+    "$xui_binary" setting "$@"
+  fi
+)
+
+xui_panel_port() {
+  # -show may include credentials. Consume its output here; only emit the port.
+  xui_cli "$1" -show 2>/dev/null | sed -n 's/^port:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p'
+}
+
+xui_listener_ip() {
+  xui_cli "$1" -getListen 2>/dev/null \
     | sed -n 's/^listenIP:[[:space:]]*//p' | head -n 1
 }
 
@@ -1808,6 +1825,10 @@ apply_xui_listener_address() {
     error "无法确认 3X-UI CLI 程序路径，已取消修改。"
     return 1
   }
+  if [[ "$(xui_panel_port "$xui_binary")" != "$port" ]]; then
+    error "所选端口不是 3X-UI 面板端口（可能是订阅服务），已取消修改。"
+    return 1
+  fi
   if [[ "$bind_host" != "0.0.0.0" ]] && ! is_valid_ipv4 "$bind_host"; then
     error "3X-UI 监听地址必须是有效 IPv4 地址。"
     return 1
@@ -1817,25 +1838,25 @@ apply_xui_listener_address() {
     error "无法从 3X-UI CLI 读取有效的当前 IPv4 监听地址，已取消修改。"
     return 1
   fi
-  if [[ "$old_address" == "$bind_host" ]]; then
+  if [[ "$old_address" == "$bind_host" ]] && generic_listener_is_listening_on "$port" "$bind_host"; then
     info "3X-UI 已监听 ${bind_host}:${port}，无需修改。"
     return 0
   fi
 
-  if ! "$xui_binary" setting -listenIP "$bind_host"; then
-    error "3X-UI CLI 修改监听地址失败。"
-    return 1
-  fi
-  if systemctl restart x-ui.service && wait_for_xui_listener "$port" "$bind_host"; then
+  if xui_cli "$xui_binary" -listenIP "$bind_host" \
+      && systemctl restart x-ui.service && wait_for_xui_listener "$port" "$bind_host"; then
     success "3X-UI 已监听 ${bind_host}:${port}。"
     show_local_listener "$port"
     return 0
   fi
 
-  error "3X-UI 重启或监听验证失败，正在恢复原监听地址 ${old_address}。"
-  "$xui_binary" setting -listenIP "$old_address" >/dev/null 2>&1 || true
-  systemctl restart x-ui.service >/dev/null 2>&1 || true
-  wait_for_xui_listener "$port" "$old_address" || true
+  error "3X-UI 设置、重启或监听验证失败，正在恢复原监听地址 ${old_address}。"
+  if xui_cli "$xui_binary" -listenIP "$old_address" \
+      && systemctl restart x-ui.service && wait_for_xui_listener "$port" "$old_address"; then
+    info "已恢复 3X-UI 原监听地址 ${old_address}:${port}。"
+  else
+    error "恢复失败，请检查 x-ui.service 日志，并在 3X-UI 中恢复监听地址 ${old_address}。"
+  fi
   return 1
 }
 
@@ -1844,12 +1865,23 @@ manage_xui_systemd_listener() {
   local listener="$2"
   local unit="$3"
   local pid xui_binary current_ip
+  local XUI_SERVICE_WORKDIR
+  local -a XUI_SERVICE_ENV
 
   pid="$(printf '%s\n' "$listener" | listener_pid_from_details)"
   [[ "$pid" =~ ^[0-9]+$ ]] || { error "无法识别 x-ui 进程 PID。"; return 1; }
   xui_binary="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
   if [[ "$unit" != "x-ui.service" || "$(basename -- "$xui_binary")" != "x-ui" || ! -x "$xui_binary" ]]; then
     error "端口由 x-ui 进程监听，但无法确认其属于标准 x-ui.service，已跳过专用修改。"
+    return 1
+  fi
+  XUI_SERVICE_WORKDIR="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+  if [[ -z "$XUI_SERVICE_WORKDIR" ]] || ! mapfile -d '' -t XUI_SERVICE_ENV <"/proc/${pid}/environ"; then
+    error "无法读取 3X-UI 服务的工作目录和运行环境，已取消修改。"
+    return 1
+  fi
+  if [[ "$(xui_panel_port "$xui_binary")" != "$port" ]]; then
+    error "所选端口不是 3X-UI 面板端口；订阅端口不使用此修改入口。"
     return 1
   fi
   current_ip="$(xui_listener_ip "$xui_binary")"
@@ -1864,8 +1896,8 @@ manage_xui_systemd_listener() {
   prompt_generic_systemd_bind_host "$port" || return 0
   warn "将把 3X-UI 面板监听改为 ${GENERIC_BIND_HOST}:${port}，并重启 x-ui.service。"
   confirm_action "确认继续？" || { info "已取消。"; return 0; }
-  if apply_xui_listener_address "$port" "$xui_binary" "$GENERIC_BIND_HOST" \
-      && [[ -n "$GENERIC_NPM_CONTAINER_ID" ]]; then
+  apply_xui_listener_address "$port" "$xui_binary" "$GENERIC_BIND_HOST" || return 1
+  if [[ -n "$GENERIC_NPM_CONTAINER_ID" ]]; then
     verify_npm_gateway_connection "$GENERIC_NPM_CONTAINER_ID" "$GENERIC_NPM_CONTAINER_NAME" "$GENERIC_NPM_GATEWAY" "$port" || true
   fi
 }
