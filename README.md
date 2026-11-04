@@ -1,6 +1,6 @@
 # NPMCtl
 
-`NPMCtl` 是运行在 Linux 宿主机上的交互式 Nginx Proxy Manager Docker 管理工具。它创建并管理官方 NPM 镜像、持久化数据、证书和 Compose 配置；不修改 NPM 面板内的 Proxy Hosts、证书或用户数据。
+`NPMCtl` 是运行在 Linux 宿主机上的交互式 Nginx Proxy Manager Docker 管理工具。它创建并管理官方 NPM 镜像、持久化数据、证书和 Compose 配置。站点、证书和用户记录由 NPM 面板管理；启用 443 复用时，脚本会适配 HTTPS 模板与生成配置的监听端口，并在关闭时恢复。
 
 ## 特性
 
@@ -11,6 +11,7 @@
 | 网关设置 | 查看 NPM 当前 Docker 网络与网关、将任意容器服务加入或移出 Docker 网络，并查看本机 TCP 服务监听地址。 |
 | 本机服务监听助手 | 迁移自 CaddyCtl 的完整监听助手：扫描宿主机 TCP 监听、识别监听范围/进程/PID/systemd，关联 Docker 发布端口与容器内部监听，检测 NPM 网关连通性，并支持 Kopia 接管、systemd 服务详情、监听地址备份修改、自动恢复和上一次回滚。 |
 | 原生后端支持 | host 模式下，NPM 可直接代理监听在宿主机 `127.0.0.1` 的服务。 |
+| 443 端口复用 | 菜单 `13` 管理多个 Reality SNI → Xray / Realm 映射，支持 bridge 与 host、保留映射关闭、重新启用、失败自动恢复；普通 HTTPS 网站和 HTTP 面板继续由 NPM 管理。 |
 | 日常维护 | 查看容器状态、日志、端口监听，更新管理脚本，以及备份 NPM 的 SQLite 数据和 Let's Encrypt 证书。 |
 | 配置保护 | 切换网络模式会备份旧 Compose 和 NPMCtl 配置；卸载容器默认保留 NPM 数据，完全卸载需确认。 |
 
@@ -67,6 +68,8 @@ export NPMCTL_SOURCE_URL="https://<HOST>/<PATH>/npmctl.sh"
 
 切换模式会停止并重建 NPM 容器，但不会删除 `/opt/npmctl/data` 或 `/opt/npmctl/letsencrypt` 中的数据。请在维护窗口执行，并确认宿主机端口 80、81、443 没有被其他服务占用。
 
+启用 443 复用后，切换网络模式或重新部署会保留映射与启用状态，检查 NPM 配置和管理 API 就绪后才报告成功；失败会尝试恢复原配置与原镜像。host 模式还需要回环 TCP 8443 供 NPM 内部 HTTPS 使用。
+
 在 bridge 模式下，优先让 NPM 与应用容器共享 Docker 网络，然后将 NPM 上游填写为 `Compose服务名:容器内部端口`。不要为了让 NPM 访问而把应用端口直接暴露到公网。
 
 ### 网关设置
@@ -85,11 +88,46 @@ export NPMCTL_SOURCE_URL="https://<HOST>/<PATH>/npmctl.sh"
 | --- | --- |
 | Compose 配置 | `/opt/npmctl/compose.yml` |
 | 网络模式配置 | `/opt/npmctl/.env` |
+| 443 复用映射与启动适配脚本 | `/opt/npmctl/l4/`（映射为 `routes.tsv`） |
 | NPM 数据（SQLite） | `/opt/npmctl/data` |
 | Let's Encrypt 证书 | `/opt/npmctl/letsencrypt` |
 | NPMCtl 备份 | `/var/backups/npmctl` |
 | NPMCtl 主脚本 | `/usr/local/lib/npmctl/npmctl.sh` |
 | `npmctl` 命令入口 | `/usr/local/bin/npmctl` |
+
+## 443 端口复用（HTTPS 网站 / 面板 + Reality）
+
+主菜单选择 `13`，添加一个或多个 Reality 映射，填写实际的 `serverName`、Xray / Realm 后端地址和端口，再选择“启用 / 校验并重新应用”。相同 SNI 只能映射到一个后端；Reality SNI 不能与已有 NPM 站点域名（包括匹配的通配符域名）重叠。后续在 NPM 新增站点时也应避开这些 SNI。
+
+HTTP 面板直接在 NPM 中添加 Proxy Host：填写面板域名、HTTP 后端地址和端口，申请或选择 SSL 证书。面板域名必须与 Reality SNI 不同，不需要在 NPMCtl 再配置面板映射。
+
+```text
+公网 TCP 443 → NPM 容器内 Nginx SNI 分流
+                  ├─ reality-a.example → Xray / Realm 后端 A（原始 TLS）
+                  ├─ reality-b.example → Xray / Realm 后端 B（原始 TLS）
+                  └─ 其他域名 → 内部 HTTPS → NPM Proxy Hosts / HTTP 面板
+```
+
+bridge 模式仍发布 `443:443`，host 模式同样由 NPM 容器接管 443。启用时，容器启动适配脚本将镜像自带 HTTPS 模板和已有生成配置的监听改为 `127.0.0.1:8443` / `[::1]:8443`，并通过 NPM 官方 `custom/stream.conf` 扩展入口加载 SNI 分流。不需要额外运行 Caddy / HAProxy，也不改 SQLite 内的站点、证书或用户记录。新站点继续使用适配后的模板。
+
+HTTPS 分支通过内部 PROXY protocol 传递真实客户端 IP，供 NPM 日志和 Access Lists 使用。Reality 分支会在内部中转时移除该头，Xray / Realm 无需启用 PROXY protocol；其后端看到的连接来源是 NPM，不是原始客户端 IP。原有自定义 Stream 配置会保留，但不能另外监听 TCP 443 或内部保留端口 8443；后端也不能填写这两个保留端口。
+
+后端地址按 **NPM 容器的网络视角**填写：host 模式可填写宿主机 `127.0.0.1`；bridge 模式应使用 NPM 可达的 Docker 网关地址、内网地址或共享网络服务名，容器里的 `127.0.0.1` 只代表容器自身。可使用“网关设置”和“本机服务端口监听助手”检查后端可达性。
+
+“关闭复用”会恢复原 HTTPS 监听并保留映射；可以直接重新启用。需要清空映射时，先关闭复用，再选择“删除已保存映射”。增删改已启用的映射、启停复用和切换网络模式都会重建容器，短暂中断现有连接；变更前会在 `/var/backups/npmctl/l4-*` 保存部署配置与 Nginx 配置，失败自动恢复。常规数据备份也包含 `l4` 目录。
+
+启动时会检查官方镜像的 `ssl_preread`、HTTP Real IP 模块和 HTTPS 模板结构；不兼容的镜像会停止应用，并由管理脚本尝试恢复旧部署。证书继续使用 TCP 80 的 HTTP-01 或 DNS-01；此功能仅处理可读取 SNI 的 TCP TLS 连接，不包含 UDP / QUIC 或通用 SSH 协议识别。
+
+## 开发验证
+
+```bash
+bash -n npmctl.sh
+python3 -m unittest discover -s tests -v
+docker pull jc21/nginx-proxy-manager:latest
+python3 tests/integration_l4.py
+```
+
+集成验证使用临时数据目录和独立容器，bridge 端口随机绑定到本机回环地址；检查 HTTPS 真实 IP、多个 TLS 后端、重建容器、失败回滚、关闭和重新启用。宿主机相关端口空闲时还会验证 bridge → host → bridge 切换。
 
 ## 首次登录与安全
 
