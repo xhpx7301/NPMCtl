@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.5.3"
+readonly MANAGER_VERSION="1.5.4"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -583,6 +583,28 @@ show_l4_status() {
   fi
 }
 
+l4_default_backend_host() {
+  local mode gateway
+  local -a gateways=()
+
+  # Inspect the managed NPM, rather than another NPM container or docker0.
+  mode="$(docker_network_mode_for_container nginx-proxy-manager)"
+  if [[ "$mode" == host ]]; then
+    printf '127.0.0.1\n'
+  elif [[ -n "$mode" && "$mode" != none && "$mode" != container:* ]]; then
+    mapfile -t gateways < <(
+      docker_gateway_targets_for_container nginx-proxy-manager \
+        | cut -f4 | awk 'NF && !seen[$0]++'
+    )
+    if (( ${#gateways[@]} == 1 )); then
+      gateway="${gateways[0]}"
+      is_valid_ipv4 "$gateway" && printf '%s\n' "$gateway"
+    fi
+  elif [[ -z "$mode" && "$(config_value NETWORK_MODE)" == host ]]; then
+    printf '127.0.0.1\n'
+  fi
+}
+
 edit_l4_routes() {
   local action="$1" sni host port choice index=0 row candidate
   local -a rows=()
@@ -599,7 +621,15 @@ edit_l4_routes() {
   fi
   if [[ "$action" != delete ]]; then
     read -r -p "Reality serverName（SNI）[${sni:-}]：" row || return 0; sni="${row:-${sni:-}}"; sni="${sni,,}"
-    info 'host 网络可用 127.0.0.1；bridge 网络请填容器可达的网关地址或共享网络服务名。'
+    if [[ -z "${host:-}" ]]; then
+      host="$(l4_default_backend_host)"
+      if [[ -n "$host" ]]; then
+        info "按 NPM 网络检测到后端默认地址 ${host}，回车使用，也可手动填写。"
+      else
+        warn '无法确定唯一的后端默认地址（容器不可用或连接多个网络），请手动填写。'
+      fi
+    fi
+    info 'host 可用 127.0.0.1；bridge 使用容器可达的网关或共享网络服务名。请确认 Xray / Realm 入站监听此地址；3X-UI 面板监听不代表入站监听。'
     read -r -p "Xray / Realm 后端地址 [${host:-}]：" row || return 0; host="${row:-${host:-}}"; host="${host#[}"; host="${host%]}"
     read -r -p "后端端口 [${port:-}]：" row || return 0; port="${row:-${port:-}}"
   fi

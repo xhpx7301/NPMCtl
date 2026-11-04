@@ -59,6 +59,63 @@ printf 'valid.example\t::1\t15443\nsecond.example\txray-service\t25443\n' >"$L4_
 validate_l4_routes "$L4_ROUTES"
 ''')
 
+    def test_backend_default_follows_managed_container_network(self):
+        self.bash('''
+docker_network_mode_for_container() { [[ "$1" == nginx-proxy-manager ]] || exit 9; printf '%s' "$MODE"; }
+docker_gateway_targets_for_container() {
+  [[ "$1" == nginx-proxy-manager ]] || exit 9
+  printf 'id\\tnpm\\tnpmctl_default\\t172.25.0.1\\n'
+}
+config_value() { printf host; }
+MODE=host
+[[ "$(l4_default_backend_host)" == 127.0.0.1 ]] || exit 1
+MODE=npmctl_default
+[[ "$(l4_default_backend_host)" == 172.25.0.1 ]] || exit 2
+MODE=''
+[[ "$(l4_default_backend_host)" == 127.0.0.1 ]] || exit 3
+MODE=none
+[[ -z "$(l4_default_backend_host)" ]] || exit 4
+MODE=container:other
+[[ -z "$(l4_default_backend_host)" ]] || exit 5
+MODE=npmctl_default
+docker_gateway_targets_for_container() {
+  printf 'id\\tnpm\\tone\\t172.25.0.1\\nid\\tnpm\\ttwo\\t172.26.0.1\\n'
+}
+[[ -z "$(l4_default_backend_host)" ]] || exit 6
+docker_gateway_targets_for_container() { :; }
+[[ -z "$(l4_default_backend_host)" ]] || exit 7
+MODE=''
+config_value() { printf bridge; }
+[[ -z "$(l4_default_backend_host)" ]] || exit 8
+''')
+
+    def test_route_prompt_accepts_default_override_and_preserves_existing_host(self):
+        self.bash('''
+l4_default_backend_host() { printf 172.25.0.1; }
+confirm_action() { return 0; }
+backup_file() { :; }
+edit_l4_routes add <<'INPUT'
+reality.example
+
+15443
+INPUT
+[[ "$(cat "$L4_ROUTES")" == $'reality.example\\t172.25.0.1\\t15443' ]] || exit 1
+l4_default_backend_host() { printf 127.0.0.1; }
+edit_l4_routes edit <<'INPUT'
+1
+
+
+
+INPUT
+[[ "$(cat "$L4_ROUTES")" == $'reality.example\\t172.25.0.1\\t15443' ]] || exit 2
+edit_l4_routes add <<'INPUT'
+other.example
+xray-service
+25443
+INPUT
+grep -Fx $'other.example\\txray-service\\t25443' "$L4_ROUTES" || exit 3
+''')
+
     def test_conflict_with_existing_site_including_wildcard(self):
         self.bash('''
 install -d "$L4_DIR" "$DATA_DIR/nginx/proxy_host"
