@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.4.5"
+readonly MANAGER_VERSION="1.4.6"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -574,6 +574,9 @@ format_listener_table() {
         }
       }
       row_count++
+      # Sort by the local listening port, keeping equal-port rows in input order.
+      port_sort[row_count] = port + 0
+      row_order[row_count] = row_count
       field[row_count, 1] = $1
       field[row_count, 2] = $2
       field[row_count, 3] = $3
@@ -604,6 +607,26 @@ format_listener_table() {
       }
       print_table_header()
       for (row = 1; row <= row_count; row++) {
+        min_row = row
+        for (candidate = row + 1; candidate <= row_count; candidate++) {
+          if (port_sort[candidate] < port_sort[min_row] ||
+              (port_sort[candidate] == port_sort[min_row] && row_order[candidate] < row_order[min_row])) {
+            min_row = candidate
+          }
+        }
+        if (min_row != row) {
+          temp_port = port_sort[row]
+          port_sort[row] = port_sort[min_row]
+          port_sort[min_row] = temp_port
+          temp_order = row_order[row]
+          row_order[row] = row_order[min_row]
+          row_order[min_row] = temp_order
+          for (i = 1; i <= (listener_command == "netstat" ? 8 : 7); i++) {
+            temp_field = field[row, i]
+            field[row, i] = field[min_row, i]
+            field[min_row, i] = temp_field
+          }
+        }
         if (listener_command == "netstat") {
           for (i = 1; i <= 7; i++) {
             print_data_field(field[row, i], width[i])
