@@ -48,6 +48,10 @@ export NPMCTL_SOURCE_URL="https://<HOST>/<PATH>/npmctl.sh"
 
 安装器只安装 `npmctl` 菜单入口。Docker 与 Nginx Proxy Manager 会在菜单确认后安装或部署。
 
+菜单 `4` 会检查 Docker Engine 和 `docker compose` 是否分别可用。Debian/Ubuntu 按当前 apt 源实际提供的候选包安装 Engine，并依次尝试 `docker-compose-plugin`、`docker-compose-v2` 和版本至少为 2 的 `docker-compose`（兼容 Debian 13 trixie）；不会把旧版 Python Compose v1 当作替代。如果候选包未提供可用的 `docker compose` 命令，会按 CPU 架构从 Docker Compose 官方 GitHub Release 下载插件及同一版本的 SHA-256 文件，校验成功并验证可运行后再安装，下载或校验失败会停止并说明原因。现有 apt 源没有 Engine 候选包时，会提示按 Docker 官方文档配置软件源后重试，不自动改写软件源。
+
+已有 Docker Engine 时只补齐缺少的 Compose 插件；已正常运行的 Engine 不会因该操作主动重启。只有服务未运行时才尝试启动，最后同时检查 `docker info` 和 `docker compose version`。遇到旧版本的 `Unable to locate package docker-compose-plugin` 报错，可先选菜单 `1` 更新 NPMCtl，再选菜单 `4` 重试。
+
 ## 命令
 
 | 命令或选项 | 作用 |

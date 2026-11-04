@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.5.1"
+readonly MANAGER_VERSION="1.5.2"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -114,22 +114,138 @@ update_manager() {
   exec "$MANAGER_SCRIPT"
 }
 
+apt_package_available() {
+  LC_ALL=C apt-cache policy "$1" 2>/dev/null | awk '
+    /Candidate:/ {found=1; if ($2 != "(none)") available=1}
+    END {exit !(found && available)}'
+}
+
+install_compose_plugin_release() {
+  local arch="$1" plugin_arch compose_version asset temp_dir expected actual plugin_dir staged
+  case "$arch" in
+    amd64|x86_64) plugin_arch='x86_64' ;;
+    arm64|aarch64) plugin_arch='aarch64' ;;
+    armhf|armv7l) plugin_arch='armv7' ;;
+    ppc64el|ppc64le) plugin_arch='ppc64le' ;;
+    s390x) plugin_arch='s390x' ;;
+    *) error "暂不支持自动安装 Compose 插件的系统架构：${arch:-未知}"; return 1 ;;
+  esac
+  command -v curl >/dev/null 2>&1 || { error '下载 Docker 官方 Compose 插件需要 curl。'; return 1; }
+  command -v sha256sum >/dev/null 2>&1 || { error '缺少 sha256sum，不能验证 Compose 插件。'; return 1; }
+  temp_dir="$(mktemp -d)" || return 1
+  if ! curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --connect-timeout 10 \
+      https://api.github.com/repos/docker/compose/releases/latest -o "${temp_dir}/release.json"; then
+    rm -rf -- "$temp_dir"; error '无法读取 Docker Compose 官方发行版本。'; return 1
+  fi
+  compose_version="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([0-9][^"]*\)".*/\1/p' "${temp_dir}/release.json" | head -n 1)"
+  [[ "$compose_version" =~ ^([2-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+$ ]] || {
+    rm -rf -- "$temp_dir"; error 'Docker Compose 官方发行版本格式异常。'; return 1;
+  }
+  asset="docker-compose-linux-${plugin_arch}"
+  if ! curl -fSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 15 \
+      "https://github.com/docker/compose/releases/download/v${compose_version}/${asset}" \
+      -o "${temp_dir}/${asset}" \
+      || ! curl -fSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 15 \
+        "https://github.com/docker/compose/releases/download/v${compose_version}/${asset}.sha256" \
+        -o "${temp_dir}/${asset}.sha256"; then
+    rm -rf -- "$temp_dir"; error 'Docker Compose 插件或其校验文件下载失败。'; return 1
+  fi
+  expected="$(awk 'NR == 1 {print $1; exit}' "${temp_dir}/${asset}.sha256")"
+  actual="$(sha256sum "${temp_dir}/${asset}" | awk '{print $1}')"
+  if [[ ! "$expected" =~ ^[[:xdigit:]]{64}$ || "$actual" != "$expected" ]]; then
+    rm -rf -- "$temp_dir"; error 'Docker Compose 官方 SHA-256 校验失败，已停止安装。'; return 1
+  fi
+  plugin_dir='/usr/local/lib/docker/cli-plugins'
+  install -d -m 0755 "$plugin_dir" || { rm -rf -- "$temp_dir"; return 1; }
+  staged="$(mktemp "${plugin_dir}/.docker-compose.XXXXXX")" || { rm -rf -- "$temp_dir"; return 1; }
+  if ! install -m 0755 "${temp_dir}/${asset}" "$staged" \
+      || ! "$staged" version --short >/dev/null 2>&1 \
+      || ! mv -f -- "$staged" "${plugin_dir}/docker-compose"; then
+    rm -rf -- "$temp_dir"; rm -f -- "$staged"; error 'Compose 插件文件无法运行或安装失败。'; return 1
+  fi
+  rm -rf -- "$temp_dir"
+  success "已安装并校验 Docker Compose v${compose_version} 插件。"
+}
+
+install_docker_apt() {
+  local engine_present="$1" arch package version
+  arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  apt-get update || { error 'apt 索引更新失败，请检查系统软件源和网络后重试。'; return 1; }
+  if [[ "$engine_present" == 0 ]]; then
+    if apt_package_available docker-ce && apt_package_available docker-ce-cli; then
+      apt-get install -y docker-ce docker-ce-cli containerd.io || { error 'Docker 官方 Engine 软件包安装失败。'; return 1; }
+    elif apt_package_available docker.io; then
+      apt-get install -y docker.io || { error '发行版 Docker Engine 软件包安装失败。'; return 1; }
+    else
+      error '现有 apt 软件源没有 Docker Engine 候选包；请按 https://docs.docker.com/engine/install/ 为此系统配置官方源后重试。'
+      return 1
+    fi
+  fi
+  if ! docker compose version >/dev/null 2>&1; then
+    for package in docker-compose-plugin docker-compose-v2 docker-compose; do
+      apt_package_available "$package" || continue
+      # Debian 13 names its modern Compose package docker-compose; older
+      # distributions use that name for Python Compose v1, which is unsuitable.
+      if [[ "$package" == docker-compose ]]; then
+        version="$(LC_ALL=C apt-cache policy "$package" | awk '/Candidate:/ {print $2; exit}')"
+        dpkg --compare-versions "${version#*:}" ge 2 || continue
+      fi
+      info "正在安装 Compose 软件包：${package}。"
+      if apt-get install -y "$package" && docker compose version >/dev/null 2>&1; then return 0; fi
+      warn "${package} 未提供可用的 docker compose 命令，尝试其他安装方式。"
+    done
+    warn '现有软件源未提供可用的 Compose 插件，改用经过 SHA-256 校验的 Docker 官方发行文件。'
+    if ! command -v curl >/dev/null 2>&1; then
+      apt-get install -y ca-certificates curl || { error '安装 HTTPS 下载依赖失败。'; return 1; }
+    fi
+    install_compose_plugin_release "$arch" || return 1
+  fi
+}
+
 install_docker() {
-  local manager
-  command -v docker >/dev/null 2>&1 && { success 'Docker 已安装。'; return 0; }
-  warn '将通过系统软件源安装 Docker Engine 和 Docker Compose 插件。'
-  confirm_action '确认继续安装 Docker？' || { info '已取消。'; return 0; }
-  if command -v apt-get >/dev/null 2>&1; then
-    manager='apt-get'
-    apt-get update && apt-get install -y docker.io docker-compose-plugin || { error 'Docker 安装失败。部分发行版需要按 Docker 官方文档添加 Docker 软件源。'; return 1; }
+  local engine_present=0
+  if command -v docker >/dev/null 2>&1; then
+    engine_present=1
+    if docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+      success "Docker Engine 与 $(docker compose version --short 2>/dev/null || printf 'Compose v2') 已就绪。"
+      return 0
+    fi
+    docker info >/dev/null 2>&1 || warn '检测到 Docker CLI，但 Engine 尚未启动；将启动现有 Docker 服务。'
+    docker compose version >/dev/null 2>&1 || warn '检测到 Docker Engine，但 Compose v2 不可用；将仅安装 Compose 插件。'
+  else
+    warn '将根据系统版本安装 Docker Engine 和 Docker Compose v2。'
+  fi
+  confirm_action '确认继续安装或修复 Docker？' || { info '已取消。'; return 0; }
+  # Starting a stopped daemon does not require reinstalling its packages.
+  if [[ "$engine_present" == 1 ]] && docker compose version >/dev/null 2>&1; then
+    :
+  elif command -v apt-get >/dev/null 2>&1; then
+    install_docker_apt "$engine_present" || return 1
   elif command -v dnf >/dev/null 2>&1; then
-    manager='dnf'
-    dnf install -y docker docker-compose-plugin || { error 'Docker 安装失败。'; return 1; }
+    if [[ "$engine_present" == 0 ]]; then
+      if dnf install -y docker docker-compose-plugin; then :
+      elif dnf install -y moby-engine docker-compose-plugin; then :
+      else error 'Docker Engine 或 Compose v2 安装失败。请检查发行版软件源。'; return 1
+      fi
+    elif ! docker compose version >/dev/null 2>&1; then
+      if dnf install -y docker-compose-plugin; then :
+      elif dnf install -y docker-compose; then :
+      else install_compose_plugin_release "$(uname -m)" || return 1
+      fi
+    fi
   else
     error '仅支持 apt 或 dnf 发行版自动安装 Docker。请按 Docker 官方文档安装。'; return 1
   fi
-  systemctl enable --now docker || { error "已执行 ${manager} 安装，但 Docker 服务启动失败。"; return 1; }
-  require_docker && success 'Docker Engine 与 Compose 已就绪。'
+  if ! docker info >/dev/null 2>&1; then
+    systemctl enable --now docker || { error 'Docker 服务启动失败，请运行 systemctl status docker 查看原因。'; return 1; }
+  fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    error 'Docker 软件包已安装，但 Engine 未能启动。请运行 systemctl status docker 查看原因。'; return 1
+  fi
+  if ! docker compose version >/dev/null 2>&1; then
+    error 'Docker Engine 已启动，但 Docker Compose v2 插件未通过验证。'; return 1
+  fi
+  success "Docker Engine 与 $(docker compose version --short 2>/dev/null || printf 'Compose v2') 已就绪。"
 }
 
 uninstall_docker() {
