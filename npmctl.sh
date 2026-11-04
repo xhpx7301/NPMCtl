@@ -6,7 +6,7 @@
 set -uo pipefail
 
 readonly PROJECT_NAME="NPMCtl"
-readonly MANAGER_VERSION="1.5.0"
+readonly MANAGER_VERSION="1.5.1"
 readonly MANAGER_SOURCE_URL="${NPMCTL_SOURCE_URL:-https://raw.githubusercontent.com/xhpx7301/NPMCtl/main/npmctl.sh}"
 readonly INSTALL_DIR="/opt/npmctl"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
@@ -3027,13 +3027,13 @@ draw_menu() {
   printf '  4. 安装 Docker 与 Compose\n'
   printf '  5. 部署或更新 Nginx Proxy Manager\n'
   printf '  6. 切换网络模式（桥接网络 / 宿主机网络）\n'
-  printf '  7. 查看运行状态与 Compose 配置\n'
-  printf '  8. 查看后端连接建议\n'
-  printf '  9. 查看 NPM 容器日志\n'
-  printf ' 10. 查看 NPM 端口监听与 Docker 映射\n'
-  printf ' 11. 备份 NPM 数据与证书\n'
-  printf ' 12. 卸载 NPM、Docker 或 NPMCtl\n'
-  printf ' 13. 443 端口复用（Reality SNI 分流）\n'
+  printf '  7. 443 端口复用（Reality SNI 分流）\n'
+  printf '  8. 查看运行状态与 Compose 配置\n'
+  printf '  9. 查看后端连接建议\n'
+  printf ' 10. 查看 NPM 容器日志\n'
+  printf ' 11. 查看 NPM 端口监听与 Docker 映射\n'
+  printf ' 12. 备份 NPM 数据与证书\n'
+  printf ' 13. 卸载 NPM、Docker 或 NPMCtl\n'
   printf '  0. 退出\n'
   printf '%s============================================%s\n' "$BLUE" "$RESET"
   printf '提示：退出后可在终端输入 npmctl 再次打开本菜单。\n'
@@ -3052,13 +3052,13 @@ main_menu() {
       4) install_docker; pause_menu ;;
       5) deploy_npm "$(current_network_mode)"; pause_menu ;;
       6) switch_network_mode; pause_menu ;;
-      7) show_status; pause_menu ;;
-      8) show_backend_guidance; pause_menu ;;
-      9) show_logs; pause_menu ;;
-      10) show_listeners; pause_menu ;;
-      11) backup_data; pause_menu ;;
-      12) uninstall_menu; pause_menu ;;
-      13) l4_menu ;;
+      7) l4_menu ;;
+      8) show_status; pause_menu ;;
+      9) show_backend_guidance; pause_menu ;;
+      10) show_logs; pause_menu ;;
+      11) show_listeners; pause_menu ;;
+      12) backup_data; pause_menu ;;
+      13) uninstall_menu; pause_menu ;;
       0) exit 0 ;;
       *) warn '无效选项。'; pause_menu ;;
     esac

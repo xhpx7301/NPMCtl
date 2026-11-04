@@ -11,7 +11,7 @@
 | 网关设置 | 查看 NPM 当前 Docker 网络与网关、将任意容器服务加入或移出 Docker 网络，并查看本机 TCP 服务监听地址。 |
 | 本机服务监听助手 | 迁移自 CaddyCtl 的完整监听助手：扫描宿主机 TCP 监听、识别监听范围/进程/PID/systemd，关联 Docker 发布端口与容器内部监听，检测 NPM 网关连通性，并支持 Kopia 接管、systemd 服务详情、监听地址备份修改、自动恢复和上一次回滚。 |
 | 原生后端支持 | host 模式下，NPM 可直接代理监听在宿主机 `127.0.0.1` 的服务。 |
-| 443 端口复用 | 菜单 `13` 管理多个 Reality SNI → Xray / Realm 映射，支持 bridge 与 host、保留映射关闭、重新启用、失败自动恢复；普通 HTTPS 网站和 HTTP 面板继续由 NPM 管理。 |
+| 443 端口复用 | 菜单 `7` 管理多个 Reality SNI → Xray / Realm 映射，支持 bridge 与 host、保留映射关闭、重新启用、失败自动恢复；普通 HTTPS 网站和 HTTP 面板继续由 NPM 管理。 |
 | 日常维护 | 查看容器状态、日志、端口监听，更新管理脚本，以及备份 NPM 的 SQLite 数据和 Let's Encrypt 证书。 |
 | 配置保护 | 切换网络模式会备份旧 Compose 和 NPMCtl 配置；卸载容器默认保留 NPM 数据，完全卸载需确认。 |
 
@@ -97,7 +97,7 @@ export NPMCTL_SOURCE_URL="https://<HOST>/<PATH>/npmctl.sh"
 
 ## 443 端口复用（HTTPS 网站 / 面板 + Reality）
 
-主菜单选择 `13`，添加一个或多个 Reality 映射，填写实际的 `serverName`、Xray / Realm 后端地址和端口，再选择“启用 / 校验并重新应用”。相同 SNI 只能映射到一个后端；Reality SNI 不能与已有 NPM 站点域名（包括匹配的通配符域名）重叠。后续在 NPM 新增站点时也应避开这些 SNI。
+主菜单选择 `7`，添加一个或多个 Reality 映射，填写实际的 `serverName`、Xray / Realm 后端地址和端口，再选择“启用 / 校验并重新应用”。相同 SNI 只能映射到一个后端；Reality SNI 不能与已有 NPM 站点域名（包括匹配的通配符域名）重叠。后续在 NPM 新增站点时也应避开这些 SNI。
 
 HTTP 面板直接在 NPM 中添加 Proxy Host：填写面板域名、HTTP 后端地址和端口，申请或选择 SSL 证书。面板域名必须与 Reality SNI 不同，不需要在 NPMCtl 再配置面板映射。
 
